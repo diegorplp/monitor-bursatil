@@ -49,10 +49,16 @@ if not df_port.empty:
 
 # --- CÁLCULOS: HISTORIAL (REALIZADO) ---
 ganancia_realizada = 0.0
-if not df_hist.empty and 'Resultado_Neto' in df_hist.columns:
-    # Como database.py ya limpió y normalizó, confiamos en la columna 'Resultado_Neto'.
-    # Nos aseguramos de que sea float por si acaso, llenando NaNs con 0.
-    ganancia_realizada = pd.to_numeric(df_hist['Resultado_Neto'], errors='coerce').fillna(0.0).sum()
+col_resultado_usada = "Ninguna"
+
+if not df_hist.empty:
+    # Intentamos ubicar la columna correcta
+    if 'Resultado_Neto' in df_hist.columns:
+        col_resultado_usada = 'Resultado_Neto'
+        ganancia_realizada = pd.to_numeric(df_hist['Resultado_Neto'], errors='coerce').fillna(0.0).sum()
+    elif 'Resultado Neto' in df_hist.columns:
+        col_resultado_usada = 'Resultado Neto'
+        ganancia_realizada = pd.to_numeric(df_hist['Resultado Neto'], errors='coerce').fillna(0.0).sum()
 
 # --- RESULTADO TOTAL ---
 resultado_global = ganancia_latente + ganancia_realizada
@@ -98,19 +104,24 @@ if not df_validos.empty:
         )
         st.altair_chart(chart, use_container_width=True)
 
-# --- DIAGNÓSTICO (DEBUGGER) ---
-with st.expander("🕵️ Diagnóstico de Historial", expanded=False):
+# --- DIAGNÓSTICO DETALLADO (CRÍTICO) ---
+with st.expander("🕵️ Diagnóstico de Historial (Abrir si Ganancia Realizada es 0)", expanded=False):
+    st.markdown("#### Estado de Datos")
     if df_hist.empty:
-        st.info("Historial vacío o no se pudo leer.")
+        st.error("❌ El DataFrame de Historial está VACÍO. Revisa que la pestaña 'Historial' exista en Google Sheets.")
     else:
-        st.write(f"Filas leídas: {len(df_hist)}")
-        if 'Resultado_Neto' in df_hist.columns:
-            st.write(f"Suma calculada: {ganancia_realizada:,.2f}")
-            # Muestra una muestra de datos crudos para ver si hay errores de parseo
-            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].head(), use_container_width=True)
+        st.success(f"✅ Se cargaron {len(df_hist)} filas del historial.")
+        st.write(f"**Columnas Detectadas:** {list(df_hist.columns)}")
+        st.write(f"**Columna usada para suma:** `{col_resultado_usada}`")
+        st.write(f"**Valor Sumado:** $ {ganancia_realizada:,.2f}")
+        
+        st.markdown("#### Muestra de Datos Crudos")
+        cols_preview = [c for c in ['Ticker', 'Resultado_Neto', 'Resultado Neto', 'Precio_Venta'] if c in df_hist.columns]
+        if cols_preview:
+            st.dataframe(df_hist[cols_preview].head(), use_container_width=True)
         else:
-            st.error("Columna 'Resultado_Neto' no encontrada tras normalización.")
-            st.write("Columnas disponibles:", df_hist.columns.tolist())
+            st.warning("No se encuentran columnas de resultado en el Historial cargado. ¿Estás leyendo la hoja correcta?")
+            st.dataframe(df_hist.head())
 
 # Tabla final
 if not df_hist.empty:
