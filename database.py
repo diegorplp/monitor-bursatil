@@ -50,40 +50,55 @@ def _get_worksheet(name=None):
 # --- LECTURA ---
 def get_portafolio_df():
     try:
-        ws = _get_worksheet()
-        data = ws.get_all_records()
-        if not data: return pd.DataFrame()
+        ws = _get_worksheet() # Conecta OK
         
+        # DEBUG: Intentamos leer crudo sin formato
+        raw_values = ws.get_all_values()
+        
+        if not raw_values:
+            raise ValueError(f"La hoja '{ws.title}' está TOTALMENTE vacía (0 celdas con datos).")
+            
+        # Si hay datos, veamos qué son
+        header = raw_values[0]
+        row_count = len(raw_values)
+        
+        # Validamos si gspread lo lee como dict
+        data = ws.get_all_records()
+        
+        if not data:
+            # Aquí está el problema. Hay datos visuales pero el record devuelve vacío.
+            # Probablemente el header está mal o hay filas vacías interactivas.
+            raise ValueError(
+                f"Error Lógico Gspread: Hay {row_count} filas crudas, pero get_all_records devolvió 0.\n"
+                f"Encabezados leídos: {header}\n"
+                f"Ejemplo Fila 2: {raw_values[1] if row_count > 1 else 'N/A'}"
+            )
+
         df = pd.DataFrame(data)
+        # ... (Resto del código de limpieza igual) ...
         df.columns = [c.strip() for c in df.columns]
         
-        expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        if not all(c in df.columns for c in expected): return pd.DataFrame()
-
         def fix_ticker(t):
             t = str(t).strip().upper()
             if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
-        if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
-        if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
-
+        # Tipos
         df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce')
         df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce')
-        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0)
-        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0)
         
         df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
-        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
+        
+        if df.empty:
+            raise ValueError(f"Leí datos pero al limpiar quedó vacío. Chequea tipos de datos.\nData cruda: {data[:1]}")
 
         return df
+
     except Exception as e:
-        print(f"ERROR LEYENDO DB: {e}")
-        # Propagamos error de conexión para debug en nube
-        if "FileNotFound" in str(e) or "gspread" in str(e): raise e
-        return pd.DataFrame()
+        # Propagamos el error para verlo en el cartel rojo del Home
+        raise e
+
 
 def get_historial_df():
     try:
