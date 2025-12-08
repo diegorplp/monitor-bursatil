@@ -133,26 +133,26 @@ if not st.session_state.init_done:
 
 st.divider()
 
-# PANELES
+# A. PANEL RECIENTES (CON DIAGNÓSTICO)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
     col_a, col_b = st.columns([1, 4])
+    
+    # --- DIAGNÓSTICO DE CONEXIÓN ---
     if col_a.button("Actualizar Recientes"):
-        tickers = database.get_tickers_en_cartera()
-        if tickers: update_data(tickers, "Cartera")
-        else: st.info("No hay activos en cartera.")
-
-    if not st.session_state.oportunidades.empty:
-        mis_tickers = database.get_tickers_en_cartera()
-        mis_t_norm = [str(t).strip().upper() for t in mis_tickers]
-        idx_norm = st.session_state.oportunidades.index.astype(str).str.strip().str.upper()
-        mask = idx_norm.isin(mis_t_norm)
-        df_show = st.session_state.oportunidades[mask]
-        
-        if not df_show.empty:
-            st.dataframe(get_styled_screener(df_show), use_container_width=True)
-        else:
-             if len(mis_tickers) > 0: st.info("Cargando precios...")
-    else: st.caption("Esperando datos...")
+        try:
+            tickers = database.get_tickers_en_cartera()
+            if tickers:
+                st.success(f"Conexión Exitosa. Tickers encontrados: {len(tickers)}")
+                update_data(tickers, "Cartera")
+            else:
+                st.warning("La base de datos conectó pero devolvió lista vacía.")
+        except Exception as e:
+            st.error(f"❌ ERROR CRÍTICO DE BASE DE DATOS: {str(e)}")
+            # Intentamos ver si es la credencial
+            if config.USE_CLOUD_AUTH:
+                st.write("Modo: NUBE (Secrets)")
+            else:
+                st.write("Modo: LOCAL (Archivo)")
 
 # RESTO PANELES
 paneles_orden = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
