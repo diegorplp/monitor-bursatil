@@ -1,90 +1,82 @@
 import gspread
 import pandas as pd
 from datetime import datetime
-import os 
-import sys # Añadido para debugging
+try:
+    from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
+except ImportError:
+    SHEET_NAME = ""
+    CREDENTIALS_FILE = ""
+    COMISIONES = {}
+    IVA = 1.21
+    DERECHOS_MERCADO = 0.0008
+    VETA_MINIMO = 50
 
-# Importación directa de config.py
-from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
+# --- LÓGICA DE COMISIONES (Privada) ---
+def _calcular_costo_operacion(monto_bruto, broker):
+    broker = str(broker).upper().strip()
+    if broker == 'VETA':
+        TASA = 0.0015
+        comision_base = max(VETA_MINIMO, monto_bruto * TASA)
+        gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
+        return gastos
+    elif broker == 'COCOS':
+        return monto_bruto * DERECHOS_MERCADO
+    else:
+        tasa = COMISIONES.get(broker, 0.006)
+        return monto_bruto * tasa
 
-print(f"DEBUG_DB: 1. Valores de config cargados. USE_CLOUD_AUTH: {USE_CLOUD_AUTH}")
-print(f"DEBUG_DB: 2. CREDENTIALS_FILE: {CREDENTIALS_FILE}")
-print(f"DEBUG_DB: 3. GOOGLE_CREDENTIALS_DICT es None: {GOOGLE_CREDENTIALS_DICT is None}")
-
-
-# --- LÓGICA DE COMISIONES (Función auxiliar) ---
-def _calcular_costo_operacion(monto_bruto, broker_key):
-    """Calcula el costo total de una operación (comisiones + derechos + IVA)."""
-    comision_pct = COMISIONES.get(broker_key, COMISIONES['DEFAULT'])
-    
-    # 1. Comisión del Broker (con IVA)
-    costo_comision = monto_bruto * comision_pct * IVA 
-    
-    # 2. Derechos de Mercado (sin IVA)
-    costo_derechos = monto_bruto * DERECHOS_MERCADO
-    
-    costo_total = costo_comision + costo_derechos
-    
-    # 3. Veta (Si el costo total es muy bajo, se aplica un mínimo)
-    if monto_bruto > 0 and costo_total < VETA_MINIMO:
-        return VETA_MINIMO
-        
-    return costo_total
-
-# --- CONEXIÓN INTELIGENTE Y BLINDADA ---
+# --- CONEXIÓN ---
 def _get_worksheet(name=None):
-    gc = None
     try:
-        print("DEBUG_DB_WS: 1. Intentando conectar a Google Sheets.")
-        
-        # ⚠️ CAMBIO CRÍTICO: Chequeamos la existencia del diccionario de credenciales
-        if GOOGLE_CREDENTIALS_DICT is not None and GOOGLE_CREDENTIALS_DICT != {}:
-            print("DEBUG_DB_WS: 2a. Usando Modo CLOUD (service_account_from_dict).")
-            gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
-        else:
-            print(f"DEBUG_DB_WS: 2b. Usando Modo LOCAL (service_account). Ruta: {CREDENTIALS_FILE}")
-            # MODO LOCAL: Usa el archivo.
-            if not os.path.exists(CREDENTIALS_FILE):
-                 # Si no existe, lanza el error. ESTE ES EL ERROR QUE ESTAMOS VIENDO
-                 print(f"DEBUG_DB_WS: 3. ERROR DE ARCHIVO LOCAL: Archivo no encontrado en la ruta: {CREDENTIALS_FILE}", file=sys.stderr)
-                 raise FileNotFoundError(f"Archivo local no encontrado en la ruta: {CREDENTIALS_FILE}")
-
-            gc = gspread.service_account(filename=CREDENTIALS_FILE)
-            
-        print(f"DEBUG_DB_WS: 4. Autenticación exitosa. Abriendo hoja: {SHEET_NAME}")
+        gc = gspread.service_account(filename=CREDENTIALS_FILE)
         sh = gc.open(SHEET_NAME)
         if name: return sh.worksheet(name)
         return sh.get_worksheet(0)
     except Exception as e:
-        print(f"ERROR CONEXIÓN SHEETS: {e}", file=sys.stderr)
-        if "spreadsheet not found" in str(e).lower() or "not accessible" in str(e).lower():
-             print("Pista: Verifique que la cuenta de servicio de Google tenga permisos de 'Lector' en la hoja.", file=sys.stderr)
-        
+        print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
-# --- LECTURA ---
+# --- LECTURA PORTAFOLIO (BLINDAJE DE TIPOS) ---
 def get_portafolio_df():
     try:
         ws = _get_worksheet()
         data = ws.get_all_records()
+        if not data: return pd.DataFrame()
         
-        if not data: 
-            raise ValueError(f"Hoja '{SHEET_NAME}' sin filas de datos válidos (Fila 2 vacía).")
-
         df = pd.DataFrame(data)
         df.columns = [c.strip() for c in df.columns]
         
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        if not all(c in df.columns for c in expected): 
-            raise ValueError(f"Faltan columnas obligatorias: {expected}. Leídas: {df.columns.tolist()}")
+        if not all(c in df.columns for c in expected): return pd.DataFrame()
 
-        # ... (El resto de la lógica de limpieza de datos es la misma)
+        def fix_ticker(t):
+            t = str(t).strip().upper()
+            if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
+            return t
+        df['Ticker'] = df['Ticker'].apply(fix_ticker)
+
+        # Rellenar faltantes
+        if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
+        if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
+        if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
+
+        # --- BLINDAJE CRÍTICO DE TIPOS ---
+        # Si Streamlit está fallando en comparar str/int, forzamos float aquí.
+        df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce').astype(float)
+        df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce').astype(float)
+        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0).astype(float)
+        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0).astype(float)
+        
+        df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
+        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
 
         return df
+
     except Exception as e:
-        raise e 
+        print(f"ERROR LEYENDO DB: {e}")
+        return pd.DataFrame()
 
-
+        
 def get_historial_df():
     try:
         ws = _get_worksheet("Historial")
