@@ -1,6 +1,7 @@
 import gspread
 import pandas as pd
 import time
+import streamlit as st
 from gspread.exceptions import APIError
 from datetime import datetime
 try:
@@ -18,18 +19,14 @@ except ImportError:
 # --- UTILIDADES ---
 def _calcular_costo_operacion(monto_bruto, broker):
     broker = str(broker).upper().strip()
-    
     if broker == 'VETA':
-        # VETA: 0.15% + IVA + Derechos. Mínimo fijo.
         TASA = 0.0015
         comision_base = max(VETA_MINIMO, monto_bruto * TASA)
         gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return gastos
-    
-    # ELIMINADA LA EXCEPCIÓN DE COCOS
-    # Ahora Cocos cae aquí abajo y usa el valor de config (0.006)
+    elif broker == 'COCOS':
+        return monto_bruto * DERECHOS_MERCADO
     else:
-        # Default (IOL/BULL/COCOS): Tasa all-in del config (ej: 0.6%)
         tasa = COMISIONES.get(broker, 0.006)
         return monto_bruto * tasa
 
@@ -44,21 +41,21 @@ def _clean_number_str(val):
     try: return float(s)
     except: return 0.0
 
-# --- DECORADOR DE REINTENTO ---
+# --- RETRY LOGIC ---
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
-        max_retries = 3
+        max_retries = 4 # Aumentamos intentos
         for i in range(max_retries):
             try:
                 return func(*args, **kwargs)
             except APIError as e:
                 if e.response.status_code == 429:
-                    wait_time = (i + 1) * 2
+                    wait_time = (i + 1) * 3 # Espera más agresiva (3, 6, 9, 12s)
                     time.sleep(wait_time)
                 else:
                     raise e
             except Exception as e:
-                if "Quota exceeded" in str(e): time.sleep((i + 1) * 2)
+                if "Quota exceeded" in str(e): time.sleep((i + 1) * 3)
                 else: raise e
         return func(*args, **kwargs)
     return wrapper
@@ -78,7 +75,15 @@ def _get_worksheet(name=None):
         print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
-# --- LECTURA ---
+# --- LIMPIEZA DE CACHÉ GLOBAL ---
+def clear_db_cache():
+    """Borra la memoria caché para forzar una lectura fresca."""
+    get_portafolio_df.clear()
+    get_historial_df.clear()
+    get_favoritos.clear()
+
+# --- LECTURA CON CACHÉ ---
+@st.cache_data(ttl=60, show_spinner=False) # Guarda en memoria 60 segs
 @retry_api_call
 def get_portafolio_df():
     try:
@@ -115,6 +120,7 @@ def get_portafolio_df():
         print(f"ERROR LEYENDO DB: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
@@ -138,7 +144,7 @@ def get_tickers_en_cartera():
     if df.empty: return []
     return df['Ticker'].unique().tolist()
 
-# --- ESCRITURA ---
+# --- ESCRITURA (CON LIMPIEZA DE CACHÉ) ---
 @retry_api_call
 def add_transaction(data):
     try:
@@ -150,6 +156,7 @@ def add_transaction(data):
             float(data.get('Alerta_Alta', 0.0)), float(data.get('Alerta_Baja', 0.0))
         ]
         ws.append_row(row)
+        clear_db_cache() # <--- IMPORTANTE: Limpiamos caché al escribir
         return True, "Transacción agregada."
     except Exception as e:
         return False, f"Error al guardar: {e}"
@@ -172,6 +179,7 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
         if idx_fila == -1: return False, "Lote no encontrado."
         ws.update_cell(idx_fila, 6, float(nueva_alta))
         ws.update_cell(idx_fila, 7, float(nueva_baja))
+        clear_db_cache() # <--- Limpiamos caché
         return True, "Alertas guardadas."
     except Exception as e:
         return False, f"Error: {e}"
@@ -207,7 +215,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         cant_tenencia = int(_clean_number_str(fila_encontrada['Cantidad']))
         precio_compra = _clean_number_str(fila_encontrada['Precio_Compra'])
-        
         cant_vender = int(cantidad_a_vender)
         precio_vta = float(precio_venta)
         broker = str(fila_encontrada.get('Broker', 'DEFAULT'))
@@ -218,13 +225,11 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
-        
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
         
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
-        
         resultado = ingreso_neto_venta - costo_total_origen
 
         row_h = [
@@ -244,12 +249,14 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             ws_port.update_cell(idx_fila, 3, nueva_cant)
             msg = "Venta PARCIAL registrada."
             
+        clear_db_cache() # <--- Limpiamos caché
         return True, msg
 
     except Exception as e:
         return False, f"Error venta: {e}"
 
-# --- GESTIÓN DE FAVORITOS ---
+# --- FAVORITOS (CON CACHÉ) ---
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_favoritos():
     try:
@@ -271,9 +278,10 @@ def add_favorito(ticker):
         ws = _get_worksheet("Favoritos")
         ticker = ticker.strip().upper()
         if not ticker.endswith(".BA") and len(ticker) < 9: ticker += ".BA"
-        existentes = get_favoritos()
+        existentes = get_favoritos() # Usa caché si existe
         if ticker in existentes: return False, "Ya existe."
         ws.append_row([ticker])
+        clear_db_cache() # Limpiar caché
         return True, "Agregado."
     except Exception as e: return False, f"Error: {e}"
 
@@ -284,10 +292,12 @@ def remove_favorito(ticker):
         cell = ws.find(ticker)
         if cell:
             ws.delete_rows(cell.row)
+            clear_db_cache() # Limpiar caché
             return True, "Eliminado."
         cell = ws.find(ticker.replace('.BA', ''))
         if cell:
             ws.delete_rows(cell.row)
+            clear_db_cache() # Limpiar caché
             return True, "Eliminado."
         return False, "No encontrado."
     except Exception as e: return False, f"Error: {e}"
