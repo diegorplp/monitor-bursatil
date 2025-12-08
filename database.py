@@ -30,40 +30,27 @@ def _calcular_costo_operacion(monto_bruto, broker):
 def _clean_number_str(val):
     """
     Limpia strings numéricos con formatos mixtos (latino/inglés).
-    Ej: "1.500,50" -> 1500.50
-    Ej: "$ 1,500.50" -> 1500.50
     """
     if pd.isna(val) or val == "":
         return 0.0
     
-    # Si ya es número, devolver
     if isinstance(val, (int, float)):
         return float(val)
         
     s = str(val).strip()
     s = s.replace('$', '').replace(' ', '')
     
-    # Detección de formato:
-    # Si tiene punto Y coma (ej: 1.500,50 o 1,500.50)
+    # Detección de formato: punto Y coma
     if '.' in s and ',' in s:
-        # Asumimos formato latino (punto es mil, coma es decimal) si el punto está antes
-        # O formato USA (coma es mil, punto decimal)
         last_point = s.rfind('.')
         last_comma = s.rfind(',')
-        
-        if last_point < last_comma:
-            # Caso Latino: 1.500,50 -> Quitamos puntos, reemplazamos coma
+        if last_point < last_comma: # 1.500,50 -> Latino
             s = s.replace('.', '').replace(',', '.')
-        else:
-            # Caso USA: 1,500.50 -> Quitamos comas
+        else: # 1,500.50 -> USA
             s = s.replace(',', '')
-    
-    elif ',' in s:
-        # Solo tiene comas. Asumimos que es decimal (100,50)
+    elif ',' in s: # Solo comas (100,50)
         s = s.replace(',', '.')
         
-    # Si solo tiene puntos (100.50), Python ya lo entiende.
-    
     try:
         return float(s)
     except:
@@ -92,7 +79,6 @@ def get_portafolio_df():
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
-        # Limpiar nombres de columnas (quita espacios extra invisibles)
         df.columns = [str(c).strip() for c in df.columns]
         
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
@@ -124,19 +110,16 @@ def get_portafolio_df():
         return pd.DataFrame()
 
 def get_historial_df():
-    """Lee la pestaña Historial con limpieza numérica agresiva."""
+    """Lee la pestaña Historial con limpieza numérica."""
     try:
         ws = _get_worksheet("Historial")
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        # Limpiar headers
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Columnas que deben ser números
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
-        
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
@@ -206,7 +189,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             
             match_precio = True
             if precio_compra_id is not None:
-                # Limpiamos el precio de la DB antes de comparar
                 p_db = _clean_number_str(row['Precio_Compra'])
                 if abs(p_db - float(precio_compra_id)) > 0.05: match_precio = False
 
@@ -217,7 +199,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if not fila_encontrada: return False, "Lote no encontrado."
 
-        # Parseo seguro
         cant_tenencia = int(_clean_number_str(fila_encontrada['Cantidad']))
         precio_compra = _clean_number_str(fila_encontrada['Precio_Compra'])
         
@@ -229,7 +210,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cant_vender > cant_tenencia: return False, "Cantidad insuficiente."
 
-        # Cálculos
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
         
@@ -241,7 +221,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         resultado = ingreso_neto_venta - costo_total_origen
 
-        # Guardar en Historial (12 cols)
         row_h = [
             str(ticker), str(fecha_compra_str), precio_compra,
             str(fecha_venta_str), precio_vta, cant_vender,
@@ -263,3 +242,44 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
     except Exception as e:
         return False, f"Error venta: {e}"
+
+# --- GESTIÓN DE FAVORITOS (¡AHORA SÍ!) ---
+
+def get_favoritos():
+    try:
+        ws = _get_worksheet("Favoritos")
+        vals = ws.col_values(1)
+        if not vals: return []
+        clean_favs = []
+        for v in vals:
+            v_str = str(v).strip().upper()
+            if v_str and v_str != "TICKER":
+                if not v_str.endswith(".BA") and len(v_str) < 9: v_str += ".BA"
+                clean_favs.append(v_str)
+        return list(set(clean_favs))
+    except: return []
+
+def add_favorito(ticker):
+    try:
+        ws = _get_worksheet("Favoritos")
+        ticker = ticker.strip().upper()
+        if not ticker.endswith(".BA") and len(ticker) < 9: ticker += ".BA"
+        existentes = get_favoritos()
+        if ticker in existentes: return False, "Ya existe."
+        ws.append_row([ticker])
+        return True, "Agregado."
+    except Exception as e: return False, f"Error: {e}"
+
+def remove_favorito(ticker):
+    try:
+        ws = _get_worksheet("Favoritos")
+        cell = ws.find(ticker)
+        if cell:
+            ws.delete_rows(cell.row)
+            return True, "Eliminado."
+        cell = ws.find(ticker.replace('.BA', ''))
+        if cell:
+            ws.delete_rows(cell.row)
+            return True, "Eliminado."
+        return False, "No encontrado."
+    except Exception as e: return False, f"Error: {e}"
