@@ -155,6 +155,10 @@ def get_tickers_en_cartera():
     return df['Ticker'].unique().tolist()
 
 # --- ESCRITURA (Restauradas para evitar fallos de Manager) ---
+def _calcular_costo_operacion(monto_bruto, broker):
+    # Dummy para evitar ImportError si no hay config
+    return monto_bruto * 0.006
+
 @retry_api_call
 def add_transaction(data):
     try:
