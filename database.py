@@ -1,5 +1,7 @@
 import gspread
 import pandas as pd
+import time
+from gspread.exceptions import APIError
 from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
@@ -28,33 +30,41 @@ def _calcular_costo_operacion(monto_bruto, broker):
         return monto_bruto * tasa
 
 def _clean_number_str(val):
-    """
-    Limpia strings numéricos con formatos mixtos (latino/inglés).
-    """
-    if pd.isna(val) or val == "":
-        return 0.0
-    
-    if isinstance(val, (int, float)):
-        return float(val)
-        
-    s = str(val).strip()
-    s = s.replace('$', '').replace(' ', '')
-    
-    # Detección de formato: punto Y coma
+    if pd.isna(val) or val == "": return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    s = str(val).strip().replace('$', '').replace(' ', '')
     if '.' in s and ',' in s:
-        last_point = s.rfind('.')
-        last_comma = s.rfind(',')
-        if last_point < last_comma: # 1.500,50 -> Latino
-            s = s.replace('.', '').replace(',', '.')
-        else: # 1,500.50 -> USA
-            s = s.replace(',', '')
-    elif ',' in s: # Solo comas (100,50)
-        s = s.replace(',', '.')
-        
-    try:
-        return float(s)
-    except:
-        return 0.0
+        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') # Latino
+        else: s = s.replace(',', '') # USA
+    elif ',' in s: s = s.replace(',', '.')
+    try: return float(s)
+    except: return 0.0
+
+# --- DECORADOR DE REINTENTO (FIX ERROR 429) ---
+def retry_api_call(func):
+    """Intenta ejecutar la función hasta 3 veces si da error de cuota (429)."""
+    def wrapper(*args, **kwargs):
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except APIError as e:
+                # Si es error 429 (Quota Exceeded)
+                if e.response.status_code == 429:
+                    wait_time = (i + 1) * 2 # Espera 2s, 4s, 6s
+                    print(f"⚠️ Cuota Google excedida. Reintentando en {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise e # Si es otro error, lanzarlo normal
+            except Exception as e:
+                # Otros errores de conexión
+                if "Quota exceeded" in str(e):
+                    time.sleep((i + 1) * 2)
+                else:
+                    raise e
+        # Último intento sin try-except para que devuelva el error si falla todo
+        return func(*args, **kwargs)
+    return wrapper
 
 # --- CONEXIÓN ---
 def _get_worksheet(name=None):
@@ -72,6 +82,7 @@ def _get_worksheet(name=None):
         raise e
 
 # --- LECTURA ---
+@retry_api_call
 def get_portafolio_df():
     try:
         ws = _get_worksheet()
@@ -96,8 +107,8 @@ def get_portafolio_df():
         for c, default in cols_defs.items():
             if c not in df.columns: df[c] = default
 
-        # Limpieza Numérica ROBUSTA
-        for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
+        # Limpieza Numérica
+        for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']:
             df[c] = df[c].apply(_clean_number_str)
         
         df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
@@ -109,8 +120,8 @@ def get_portafolio_df():
         print(f"ERROR LEYENDO DB: {e}")
         return pd.DataFrame()
 
+@retry_api_call
 def get_historial_df():
-    """Lee la pestaña Historial con limpieza numérica."""
     try:
         ws = _get_worksheet("Historial")
         data = ws.get_all_records()
@@ -121,8 +132,7 @@ def get_historial_df():
         
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
-            if c in df.columns:
-                df[c] = df[c].apply(_clean_number_str)
+            if c in df.columns: df[c] = df[c].apply(_clean_number_str)
                 
         return df
     except Exception as e:
@@ -135,6 +145,7 @@ def get_tickers_en_cartera():
     return df['Ticker'].unique().tolist()
 
 # --- ESCRITURA ---
+@retry_api_call
 def add_transaction(data):
     try:
         ws = _get_worksheet()
@@ -149,6 +160,7 @@ def add_transaction(data):
     except Exception as e:
         return False, f"Error al guardar: {e}"
 
+@retry_api_call
 def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
     try:
         ws = _get_worksheet()
@@ -164,13 +176,13 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
                 break
         
         if idx_fila == -1: return False, "Lote no encontrado."
-        # Asumimos Cols 6 y 7
         ws.update_cell(idx_fila, 6, float(nueva_alta))
         ws.update_cell(idx_fila, 7, float(nueva_baja))
         return True, "Alertas guardadas."
     except Exception as e:
         return False, f"Error: {e}"
 
+@retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
         ws_port = _get_worksheet()
@@ -243,8 +255,8 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
     except Exception as e:
         return False, f"Error venta: {e}"
 
-# --- GESTIÓN DE FAVORITOS (¡AHORA SÍ!) ---
-
+# --- FAVORITOS (CON RETRY) ---
+@retry_api_call
 def get_favoritos():
     try:
         ws = _get_worksheet("Favoritos")
@@ -259,6 +271,7 @@ def get_favoritos():
         return list(set(clean_favs))
     except: return []
 
+@retry_api_call
 def add_favorito(ticker):
     try:
         ws = _get_worksheet("Favoritos")
@@ -270,6 +283,7 @@ def add_favorito(ticker):
         return True, "Agregado."
     except Exception as e: return False, f"Error: {e}"
 
+@retry_api_call
 def remove_favorito(ticker):
     try:
         ws = _get_worksheet("Favoritos")
