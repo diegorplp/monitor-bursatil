@@ -20,23 +20,20 @@ def _clean_number_str(val):
     if isinstance(val, (int, float)): return float(val)
     
     s = str(val).strip()
-    # Manejo de negativos: (100) o -100
     is_negative = s.startswith('(') and s.endswith(')') or s.startswith('-')
     if is_negative: s = s.replace('(', '').replace(')', '').replace('-', '')
     
-    # Limpieza de símbolos
     s = re.sub(r'[^\d,.-]', '', s) 
     if not s: return 0.0
     
-    # Detección de formato (Punto vs Coma)
     if ',' in s and '.' in s:
-        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') # 1.000,00
-        else: s = s.replace(',', '') # 1,000.00
+        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') 
+        else: s = s.replace(',', '') 
     elif ',' in s:
-        if s.count(',') > 1: s = s.replace(',', '') # 1,000,000
-        else: s = s.replace(',', '.') # 10,5
+        if s.count(',') > 1: s = s.replace(',', '') 
+        else: s = s.replace(',', '.') 
     elif '.' in s:
-        if s.count('.') > 1: s = s.replace('.', '') # 1.000.000
+        if s.count('.') > 1: s = s.replace('.', '') 
     
     try:
         val_float = float(s)
@@ -56,7 +53,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Este sí usa caché porque cambia rápido) ---
+# --- LECTURA PORTAFOLIO ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -70,7 +67,6 @@ def get_portafolio_df():
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
         
-        # Limpieza de tipos para evitar PyArrow ArrowTypeError
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
@@ -81,8 +77,8 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (SIN CACHÉ - VERDAD ABSOLUTA) ---
-# He quitado @st.cache_data para evitar que guarde errores silenciosos.
+# --- LECTURA HISTORIAL (Lógica Corregida + Caché Activado) ---
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
@@ -90,18 +86,19 @@ def get_historial_df():
         worksheets = sh.worksheets()
         target_ws = None
         
-        # 1. BÚSQUEDA POR NOMBRE (PRIORIDAD ABSOLUTA)
+        # 1. BÚSQUEDA POR NOMBRE (PRIORIDAD ABSOLUTA - INMUNIDAD A COLUMNAS)
+        # Esta es la parte que arregló tu problema: si se llama Historial, la usamos.
         for ws in worksheets:
             if "HISTORIAL" in ws.title.strip().upper():
                 target_ws = ws
                 break
         
-        # 2. BÚSQUEDA POR CONTENIDO (FALLBACK)
+        # 2. BÚSQUEDA POR CONTENIDO (SOLO SI FALLA EL NOMBRE)
         if not target_ws:
             for ws in worksheets:
                 try:
                     headers = [str(h).upper() for h in ws.row_values(1)]
-                    # Filtro anti-portafolio (solo si no encontramos por nombre)
+                    # Aquí mantenemos el filtro por si acaso, pero ya no afecta a tu hoja principal
                     if "COOLDOWN_ALTA" in headers and "ALERTA_ALTA" in headers: 
                         continue 
                     if any(k in h for h in headers for k in ["RESULT", "GANANCIA", "P&L"]):
@@ -111,16 +108,15 @@ def get_historial_df():
 
         if not target_ws: return pd.DataFrame()
 
-        # LECTURA Y PROCESAMIENTO
         data = target_ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # Normalización de columnas
+        # Normalización
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
-        # Mapeo de columna Ganancia/Resultado
+        # Mapeo
         col_map = {}
         for c in df.columns:
             cu = c.upper()
@@ -130,7 +126,7 @@ def get_historial_df():
         
         if col_map: df.rename(columns=col_map, inplace=True)
 
-        # Limpieza Numérica (Incluye columnas heredadas de Portafolio para seguridad)
+        # Limpieza (Incluyendo Alertas para evitar crash de PyArrow)
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
                     'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
                     'Costo_Total_Origen', 'Ingreso_Total_Venta']
@@ -143,7 +139,6 @@ def get_historial_df():
         return df
 
     except Exception as e:
-        # Imprimimos el error en consola de Streamlit para que no pase silencioso
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
