@@ -13,24 +13,31 @@ except ImportError:
 
 # --- UTILIDADES ---
 def _clean_number_str(val):
+    """
+    Parsea strings numéricos manejando formatos mixtos (AR/US) y negativos.
+    """
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
+    
     s = str(val).strip()
-    is_negative = s.startswith('(') and s.endswith(')') or s.startswith('-') # Soporte explícito para negativos
+    # Manejo de negativos: (100) o -100
+    is_negative = s.startswith('(') and s.endswith(')') or s.startswith('-')
     if is_negative: s = s.replace('(', '').replace(')', '').replace('-', '')
     
+    # Limpieza de símbolos
     s = re.sub(r'[^\d,.-]', '', s) 
     if not s: return 0.0
     
-    # Detección de formato
+    # Detección de formato (Punto vs Coma)
     if ',' in s and '.' in s:
-        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') 
-        else: s = s.replace(',', '') 
+        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') # 1.000,00
+        else: s = s.replace(',', '') # 1,000.00
     elif ',' in s:
-        if s.count(',') > 1: s = s.replace(',', '') 
-        else: s = s.replace(',', '.') 
+        if s.count(',') > 1: s = s.replace(',', '') # 1,000,000
+        else: s = s.replace(',', '.') # 10,5
     elif '.' in s:
-        if s.count('.') > 1: s = s.replace('.', '') 
+        if s.count('.') > 1: s = s.replace('.', '') # 1.000.000
+    
     try:
         val_float = float(s)
         return -val_float if is_negative else val_float
@@ -63,6 +70,7 @@ def get_portafolio_df():
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
         
+        # Limpieza de tipos para evitar PyArrow ArrowTypeError
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
@@ -73,90 +81,72 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (CORREGIDO PARA TU SHEET) ---
-# Sin caché para debug instantáneo
+# --- LECTURA HISTORIAL ---
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
-    logs = [f"--- DEBUG {time.strftime('%H:%M:%S')} ---"]
-    
     try:
         sh = _get_connection()
         worksheets = sh.worksheets()
         target_ws = None
         
         # 1. BÚSQUEDA POR NOMBRE (PRIORIDAD ABSOLUTA)
-        # Si se llama "Historial", ignoramos qué columnas tiene. ¡Es la correcta!
         for ws in worksheets:
-            title = ws.title.strip().upper()
-            if "HISTORIAL" in title:
+            if "HISTORIAL" in ws.title.strip().upper():
                 target_ws = ws
-                logs.append(f"✅ Hoja '{ws.title}' seleccionada por nombre (Inmunidad a filtros).")
                 break
         
-        # 2. BÚSQUEDA POR CONTENIDO (SOLO SI FALLÓ LA ANTERIOR)
+        # 2. BÚSQUEDA POR CONTENIDO (FALLBACK)
         if not target_ws:
-            logs.append("⚠️ No encontré hoja llamada 'Historial'. Buscando por contenido...")
             for ws in worksheets:
                 try:
                     headers = [str(h).upper() for h in ws.row_values(1)]
-                    # Aquí sí filtramos si tiene CoolDown PERO NO Alertas (porque tu historial tiene alertas)
-                    if "COOLDOWN_ALTA" in headers: 
+                    # Filtro anti-portafolio (solo si no encontramos por nombre)
+                    if "COOLDOWN_ALTA" in headers and "ALERTA_ALTA" in headers: 
                         continue 
                     if any(k in h for h in headers for k in ["RESULT", "GANANCIA", "P&L"]):
                         target_ws = ws
                         break
                 except: continue
 
-        if not target_ws:
-            logs.append("❌ FATAL: No se encontró la hoja.")
-            st.session_state['db_logs'] = logs
-            return pd.DataFrame()
+        if not target_ws: return pd.DataFrame()
 
-        # LECTURA DE DATOS
+        # LECTURA Y PROCESAMIENTO
         data = target_ws.get_all_records()
-        if not data:
-            logs.append("⚠️ Hoja vacía.")
-            st.session_state['db_logs'] = logs
-            return pd.DataFrame()
+        if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        logs.append(f"Filas: {len(df)}")
-
-        # Normalización de Nombres de Columnas
+        
+        # Normalización de columnas
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
-        # Mapeo Inteligente (Tu hoja usa 'Resultado_Neto', esto debería detectarlo directo)
+        # Mapeo de columna Ganancia/Resultado
         col_map = {}
         for c in df.columns:
             cu = c.upper()
             if "RESULTADO" in cu and "NETO" in cu: col_map[c] = 'Resultado_Neto'
             elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
+            elif cu == "P&L": col_map[c] = 'Resultado_Neto'
         
-        if col_map: 
-            df.rename(columns=col_map, inplace=True)
-            logs.append(f"Renombrado: {col_map}")
-        
-        if 'Resultado_Neto' not in df.columns:
-             logs.append(f"⚠️ NO VEO 'Resultado_Neto'. Columnas actuales: {list(df.columns)}")
+        if col_map: df.rename(columns=col_map, inplace=True)
 
-        # Limpieza Numérica (IMPORTANTE: Limpiar Alertas también para que no explote Arrow)
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Alerta_Alta', 'Alerta_Baja', 'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        # Limpieza Numérica (Incluye columnas heredadas de Portafolio para seguridad)
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
+                    'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
+                    'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
 
-        if 'Resultado_Neto' in df.columns:
-            logs.append(f"SUMA FINAL RESULTADO: {df['Resultado_Neto'].sum()}")
-
-        st.session_state['db_logs'] = logs
         return df
 
     except Exception as e:
-        logs.append(f"🔥 Error Global: {e}")
-        st.session_state['db_logs'] = logs
+        print(f"Error Historial: {e}")
         return pd.DataFrame()
 
+# --- FUNCIONES DUMMY (Compatibilidad Manager) ---
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     return df['Ticker'].unique().tolist() if not df.empty else []

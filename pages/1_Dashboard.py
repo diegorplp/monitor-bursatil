@@ -42,7 +42,7 @@ if not df_hist.empty and 'Resultado_Neto' in df_hist.columns:
 
 resultado_global = ganancia_latente + ganancia_realizada
 
-# --- UI ---
+# --- UI MÉTRICAS ---
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Valor Cartera", f"${valor_cartera:,.0f}")
 c2.metric("Ganancia Latente", f"${ganancia_latente:,.0f}")
@@ -51,29 +51,30 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- LOGS PARA VALIDAR ---
-with st.expander("🕵️ Logs de Validación", expanded=True):
-    if st.button("🔄 RECARGAR AHORA"):
-        st.cache_data.clear()
-        st.rerun()
-
-    logs = st.session_state.get('db_logs', ["Sin logs."])
-    st.text_area("Proceso Database:", value="\n".join(logs), height=250)
-    
-    if not df_hist.empty:
-        st.write("Muestra de datos (Verifica la columna Resultado_Neto):")
-        st.dataframe(df_hist[['Ticker', 'Resultado_Neto', 'Alerta_Alta']].head())
+# --- DIAGNÓSTICO RÁPIDO (Opcional, útil para forzar recargas) ---
+with st.expander("⚙️ Opciones de Datos"):
+    c_op1, c_op2 = st.columns([1, 5])
+    with c_op1:
+        if st.button("🔄 Recargar Datos"):
+            st.cache_data.clear()
+            st.rerun()
+    with c_op2:
+        if df_hist.empty:
+            st.warning("El historial parece vacío.")
+        else:
+            st.caption(f"Historial cargado: {len(df_hist)} operaciones procesadas.")
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
     g1, g2 = st.columns(2)
     with g1:
-        base = alt.Chart(df_validos).encode(theta=alt.Theta("Valor_Actual", stack=True), color="Ticker")
+        base = alt.Chart(df_validos).encode(theta=alt.Theta("Valor_Actual", stack=True), color="Ticker", tooltip=["Ticker", "Valor_Actual"])
         st.altair_chart(base.mark_arc(outerRadius=120), use_container_width=True)
     with g2:
         chart = alt.Chart(df_validos).mark_bar().encode(
             x=alt.X('Ticker', sort='-y'), 
             y='Ganancia_Neta_Monto',
-            color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("green"), alt.value("red"))
+            color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("green"), alt.value("red")),
+            tooltip=["Ticker", "Ganancia_Neta_Monto"]
         )
         st.altair_chart(chart, use_container_width=True)
