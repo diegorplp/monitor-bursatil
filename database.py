@@ -2,7 +2,7 @@ import gspread
 import pandas as pd
 import time
 import streamlit as st
-from gspread.exceptions import APIError, WorksheetNotFound # Importamos la excepción específica
+from gspread.exceptions import APIError, WorksheetNotFound
 from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
@@ -39,7 +39,6 @@ def _clean_number_str(val):
     try: return float(s)
     except: return 0.0
 
-# --- RETRY LOGIC ---
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
         max_retries = 3
@@ -47,8 +46,7 @@ def retry_api_call(func):
             try:
                 return func(*args, **kwargs)
             except APIError as e:
-                if e.response.status_code == 429:
-                    time.sleep((i + 1) * 2)
+                if e.response.status_code == 429: time.sleep((i + 1) * 2)
                 else: raise e
             except Exception as e:
                 if "Quota exceeded" in str(e): time.sleep((i + 1) * 2)
@@ -66,24 +64,20 @@ def _get_worksheet(name=None):
             
         sh = gc.open(SHEET_NAME)
         
-        if name: 
-            # Intentamos buscar la pestaña por nombre específico
+        if name:
+            print(f"DEBUG: Abriendo pestaña específica '{name}'")
             return sh.worksheet(name)
-        
-        # Si no hay nombre, devolvemos la primera (Portafolio)
-        return sh.get_worksheet(0)
-        
-    except WorksheetNotFound:
-        print(f"❌ ERROR CRÍTICO: No se encontró la pestaña '{name}' en el Google Sheet.")
-        raise # Re-lanzamos para que la función que llamó se entere
+        else:
+            print("DEBUG: Abriendo pestaña por defecto (Índice 0)")
+            return sh.get_worksheet(0)
     except Exception as e:
-        print(f"❌ ERROR CONEXIÓN SHEETS: {e}")
+        print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
 # --- LIMPIEZA CACHÉ ---
 def clear_db_cache():
     get_portafolio_df.clear()
-    get_historial_df.clear()
+    # get_historial_df.clear() # Comentado porque le quitamos el decorador temporalmente
     get_favoritos.clear()
 
 # --- LECTURA PORTAFOLIO ---
@@ -91,15 +85,13 @@ def clear_db_cache():
 @retry_api_call
 def get_portafolio_df():
     try:
-        # Llamada SIN nombre -> Hoja 0 (Transacciones)
-        ws = _get_worksheet() 
+        ws = _get_worksheet() # Sin nombre -> Pestaña 0 (Portafolio)
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Validación
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
         if not all(c in df.columns for c in expected): return pd.DataFrame()
 
@@ -110,10 +102,8 @@ def get_portafolio_df():
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
         # Rellenar faltantes
-        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 
-                     'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
-        for c, default in cols_defs.items():
-            if c not in df.columns: df[c] = default
+        for c in ['Broker', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']:
+            if c not in df.columns: df[c] = 0
 
         # Limpieza Numérica
         for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
@@ -125,45 +115,37 @@ def get_portafolio_df():
 
         return df
     except Exception as e:
-        print(f"ERROR LEYENDO PORTAFOLIO: {e}")
+        print(f"ERROR LEYENDO DB: {e}")
         return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (CORREGIDA) ---
-@st.cache_data(ttl=60, show_spinner=False)
+# --- LECTURA HISTORIAL (FIX: SIN CACHE PARA TEST) ---
+# @st.cache_data(ttl=60, show_spinner=False) <--- COMENTADO PARA FORZAR LECTURA
 @retry_api_call
 def get_historial_df():
     try:
-        # AQUÍ ESTÁ EL CAMBIO: Forzamos el nombre "Historial"
-        print("🔍 Intentando leer pestaña 'Historial'...")
-        ws = _get_worksheet("Historial")
-        
+        # LLAMADA EXPLÍCITA AL NOMBRE "Historial"
+        ws = _get_worksheet("Historial") 
         data = ws.get_all_records()
-        if not data: 
-            print("⚠️ La pestaña Historial está vacía.")
-            return pd.DataFrame()
+        if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Verificación de seguridad: ¿Es realmente el historial?
-        if 'Resultado_Neto' not in df.columns and 'Ticker' in df.columns:
-             print(f"⚠️ ALERTA: La hoja leída no parece ser el Historial. Columnas: {df.columns.tolist()}")
-             # Intentamos normalizar nombres por si acaso
-             df.columns = [c.replace(' ', '_') for c in df.columns]
+        # Validación de seguridad: Si tiene CoolDown, NO es el historial
+        if 'CoolDown_Alta' in df.columns:
+            print("CRÍTICO: Se leyó la hoja equivocada en get_historial_df")
+            return pd.DataFrame()
 
-        # Limpieza numérica
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
         
-        print(f"✅ Historial leído: {len(df)} filas.")
         return df
-        
     except WorksheetNotFound:
-        print("❌ FATAL: No existe la pestaña 'Historial'.")
+        print("ERROR: No se encontró la pestaña 'Historial'")
         return pd.DataFrame()
     except Exception as e:
-        print(f"❌ Error General Historial: {e}")
+        print(f"Error Historial: {e}")
         return pd.DataFrame()
 
 def get_tickers_en_cartera():
@@ -175,7 +157,7 @@ def get_tickers_en_cartera():
 @retry_api_call
 def add_transaction(data):
     try:
-        ws = _get_worksheet() # Hoja 0
+        ws = _get_worksheet()
         row = [
             str(data['Ticker']), str(data['Fecha_Compra']),
             int(data['Cantidad']), float(data['Precio_Compra']),
@@ -212,8 +194,8 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
-        ws_port = _get_worksheet() # Hoja 0
-        try: ws_hist = _get_worksheet("Historial") # Hoja Historial
+        ws_port = _get_worksheet() 
+        try: ws_hist = _get_worksheet("Historial") 
         except: return False, "Falta pestaña 'Historial'."
 
         records = ws_port.get_all_records()
@@ -250,8 +232,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
+        
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
+        
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
         resultado = ingreso_neto_venta - costo_total_origen
