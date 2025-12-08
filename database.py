@@ -18,14 +18,18 @@ except ImportError:
 # --- UTILIDADES ---
 def _calcular_costo_operacion(monto_bruto, broker):
     broker = str(broker).upper().strip()
+    
     if broker == 'VETA':
+        # VETA: 0.15% + IVA + Derechos. Mínimo fijo.
         TASA = 0.0015
         comision_base = max(VETA_MINIMO, monto_bruto * TASA)
         gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return gastos
-    elif broker == 'COCOS':
-        return monto_bruto * DERECHOS_MERCADO
+    
+    # ELIMINADA LA EXCEPCIÓN DE COCOS
+    # Ahora Cocos cae aquí abajo y usa el valor de config (0.006)
     else:
+        # Default (IOL/BULL/COCOS): Tasa all-in del config (ej: 0.6%)
         tasa = COMISIONES.get(broker, 0.006)
         return monto_bruto * tasa
 
@@ -34,35 +38,28 @@ def _clean_number_str(val):
     if isinstance(val, (int, float)): return float(val)
     s = str(val).strip().replace('$', '').replace(' ', '')
     if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') # Latino
-        else: s = s.replace(',', '') # USA
+        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') 
+        else: s = s.replace(',', '') 
     elif ',' in s: s = s.replace(',', '.')
     try: return float(s)
     except: return 0.0
 
-# --- DECORADOR DE REINTENTO (FIX ERROR 429) ---
+# --- DECORADOR DE REINTENTO ---
 def retry_api_call(func):
-    """Intenta ejecutar la función hasta 3 veces si da error de cuota (429)."""
     def wrapper(*args, **kwargs):
         max_retries = 3
         for i in range(max_retries):
             try:
                 return func(*args, **kwargs)
             except APIError as e:
-                # Si es error 429 (Quota Exceeded)
                 if e.response.status_code == 429:
-                    wait_time = (i + 1) * 2 # Espera 2s, 4s, 6s
-                    print(f"⚠️ Cuota Google excedida. Reintentando en {wait_time}s...")
+                    wait_time = (i + 1) * 2
                     time.sleep(wait_time)
                 else:
-                    raise e # Si es otro error, lanzarlo normal
-            except Exception as e:
-                # Otros errores de conexión
-                if "Quota exceeded" in str(e):
-                    time.sleep((i + 1) * 2)
-                else:
                     raise e
-        # Último intento sin try-except para que devuelva el error si falla todo
+            except Exception as e:
+                if "Quota exceeded" in str(e): time.sleep((i + 1) * 2)
+                else: raise e
         return func(*args, **kwargs)
     return wrapper
 
@@ -101,13 +98,11 @@ def get_portafolio_df():
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        # Defaults
         cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 
                      'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
         for c, default in cols_defs.items():
             if c not in df.columns: df[c] = default
 
-        # Limpieza Numérica
         for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']:
             df[c] = df[c].apply(_clean_number_str)
         
@@ -133,7 +128,6 @@ def get_historial_df():
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
-                
         return df
     except Exception as e:
         print(f"Error Historial: {e}")
@@ -255,7 +249,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
     except Exception as e:
         return False, f"Error venta: {e}"
 
-# --- FAVORITOS (CON RETRY) ---
+# --- GESTIÓN DE FAVORITOS ---
 @retry_api_call
 def get_favoritos():
     try:
