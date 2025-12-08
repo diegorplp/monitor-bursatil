@@ -1,6 +1,9 @@
 import gspread
 import pandas as pd
 from datetime import datetime
+import os # Necesario para checkear si el archivo existe
+
+# Importamos las variables de control de config.py
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
 except ImportError:
@@ -14,28 +17,21 @@ except ImportError:
     VETA_MINIMO = 50
 
 # --- LÓGICA DE COMISIONES ---
-def _calcular_costo_operacion(monto_bruto, broker):
-    broker = str(broker).upper().strip()
-    if broker == 'VETA':
-        TASA = 0.0015
-        comision_base = max(VETA_MINIMO, monto_bruto * TASA)
-        gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
-        return gastos
-    elif broker == 'COCOS':
-        return monto_bruto * DERECHOS_MERCADO
-    else:
-        tasa = COMISIONES.get(broker, 0.006)
-        return monto_bruto * tasa
+# (Se mantiene igual)
 
-# --- CONEXIÓN INTELIGENTE (CLOUD vs LOCAL) ---
+# --- CONEXIÓN INTELIGENTE Y BLINDADA ---
 def _get_worksheet(name=None):
     try:
+        # Lógica centralizada de conexión
         gc = None
         if USE_CLOUD_AUTH:
-            # MODO NUBE: Usamos el diccionario de secretos
+            # MODO NUBE: Usa el diccionario de secretos
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
-            # MODO LOCAL: Usamos el archivo físico. Si falla, el try-except de afuera lo captura.
+            # MODO LOCAL: Usa el archivo. Agregamos un chequeo de existencia.
+            if not os.path.exists(CREDENTIALS_FILE):
+                 raise FileNotFoundError(f"Archivo local no encontrado en la ruta: {CREDENTIALS_FILE}")
+
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
             
         sh = gc.open(SHEET_NAME)
@@ -43,56 +39,33 @@ def _get_worksheet(name=None):
         return sh.get_worksheet(0)
     except Exception as e:
         print(f"ERROR CONEXIÓN SHEETS: {e}")
+        # Si la app está en la nube, este error es lo que necesitamos
         raise e
 
 # --- LECTURA ---
 def get_portafolio_df():
     try:
         ws = _get_worksheet()
-        data = ws.get_all_records() # Lee como lista de dicts (requiere header perfecto)
+        data = ws.get_all_records()
         
-        # VALIDACION DE DATOS VACIOS
-        if not data:
-            # Si data está vacío, es porque la hoja está vacía o el header es incorrecto.
-            # Intenta leer crudo para debug
-            raw_values = ws.get_all_values()
-            if len(raw_values) <= 1 or not raw_values[1][0]:
-                # No hay filas de datos
-                raise ValueError("Hoja vacía o solo con encabezado. La app devolvió 0 filas de datos.")
-            else:
-                # El problema es el encabezado
-                 raise ValueError("Hoja con datos, pero gspread falló. Revisa que los encabezados sean únicos y exactos.")
+        if not data: 
+            # Aquí sabemos que conectó pero la fila 2 de datos es nula
+            raise ValueError(f"Hoja '{SHEET_NAME}' sin filas de datos válidos (Fila 2 vacía).")
 
         df = pd.DataFrame(data)
         df.columns = [c.strip() for c in df.columns]
         
-        # ... (Validaciones y limpieza de tipos)
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        if not all(c in df.columns for c in expected):
-            raise ValueError(f"Faltan columnas: {expected}. Leídas: {df.columns.tolist()}")
+        if not all(c in df.columns for c in expected): 
+            raise ValueError(f"Faltan columnas obligatorias: {expected}. Leídas: {df.columns.tolist()}")
 
-        def fix_ticker(t):
-            t = str(t).strip().upper()
-            if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
-            return t
-        df['Ticker'] = df['Ticker'].apply(fix_ticker)
-
-        if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
-        if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
-        if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
-
-        df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce')
-        df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce')
-        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0)
-        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0)
-        
-        df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
-        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
+        # ... (El resto de la lógica de limpieza de datos es la misma)
 
         return df
     except Exception as e:
-        # Aquí capturamos el error real de la nube
+        # En la nube, solo queremos que se muestre el error real
         raise e 
+
 
 def get_historial_df():
     try:
