@@ -7,6 +7,7 @@ from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
 except ImportError:
+    # Valores por defecto para evitar crash si config falla
     SHEET_NAME = ""
     CREDENTIALS_FILE = ""
     COMISIONES = {}
@@ -16,18 +17,22 @@ except ImportError:
     USE_CLOUD_AUTH = False
     GOOGLE_CREDENTIALS_DICT = {}
 
-# --- UTILIDADES ---
+# --- LÓGICA DE COMISIONES (CORREGIDA) ---
 def _calcular_costo_operacion(monto_bruto, broker):
     broker = str(broker).upper().strip()
+    
     if broker == 'VETA':
+        # 0.15% + IVA + Derechos. Mínimo fijo.
         TASA = 0.0015
         comision_base = max(VETA_MINIMO, monto_bruto * TASA)
         gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return gastos
-    elif broker == 'COCOS':
-        return monto_bruto * DERECHOS_MERCADO
+    
+    # ELIMINADO EL BLOQUE DE COCOS ESPECÍFICO. 
+    # AHORA USA EL DICCIONARIO COMISIONES DE CONFIG.PY
     else:
-        tasa = COMISIONES.get(broker, 0.006)
+        # Default (IOL/BULL/COCOS): Tasa all-in del config (ej: 0.6%)
+        tasa = COMISIONES.get(broker, 0.006) 
         return monto_bruto * tasa
 
 def _clean_number_str(val):
@@ -35,8 +40,8 @@ def _clean_number_str(val):
     if isinstance(val, (int, float)): return float(val)
     s = str(val).strip().replace('$', '').replace(' ', '')
     if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') 
-        else: s = s.replace(',', '') 
+        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') # Latino
+        else: s = s.replace(',', '') # USA
     elif ',' in s: s = s.replace(',', '.')
     try: return float(s)
     except: return 0.0
@@ -44,18 +49,16 @@ def _clean_number_str(val):
 # --- RETRY LOGIC ---
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
-        max_retries = 4 # Aumentamos intentos
+        max_retries = 3
         for i in range(max_retries):
             try:
                 return func(*args, **kwargs)
             except APIError as e:
                 if e.response.status_code == 429:
-                    wait_time = (i + 1) * 3 # Espera más agresiva (3, 6, 9, 12s)
-                    time.sleep(wait_time)
-                else:
-                    raise e
+                    time.sleep((i + 1) * 2)
+                else: raise e
             except Exception as e:
-                if "Quota exceeded" in str(e): time.sleep((i + 1) * 3)
+                if "Quota exceeded" in str(e): time.sleep((i + 1) * 2)
                 else: raise e
         return func(*args, **kwargs)
     return wrapper
@@ -67,7 +70,6 @@ def _get_worksheet(name=None):
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
-            
         sh = gc.open(SHEET_NAME)
         if name: return sh.worksheet(name)
         return sh.get_worksheet(0)
@@ -75,15 +77,14 @@ def _get_worksheet(name=None):
         print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
-# --- LIMPIEZA DE CACHÉ GLOBAL ---
+# --- LIMPIEZA CACHÉ ---
 def clear_db_cache():
-    """Borra la memoria caché para forzar una lectura fresca."""
     get_portafolio_df.clear()
     get_historial_df.clear()
     get_favoritos.clear()
 
-# --- LECTURA CON CACHÉ ---
-@st.cache_data(ttl=60, show_spinner=False) # Guarda en memoria 60 segs
+# --- LECTURA ---
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
     try:
@@ -92,6 +93,7 @@ def get_portafolio_df():
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
+        # Normalizamos encabezados (quita espacios)
         df.columns = [str(c).strip() for c in df.columns]
         
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
@@ -103,12 +105,11 @@ def get_portafolio_df():
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 
-                     'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
+        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
         for c, default in cols_defs.items():
             if c not in df.columns: df[c] = default
 
-        for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']:
+        for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
             df[c] = df[c].apply(_clean_number_str)
         
         df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
@@ -129,11 +130,14 @@ def get_historial_df():
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        df.columns = [str(c).strip() for c in df.columns]
+        # Normalizamos encabezados agresivamente (Reemplaza espacios por guion bajo)
+        # Esto ayuda si en el Excel pusiste "Resultado Neto" en vez de "Resultado_Neto"
+        df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
         
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
+        
         return df
     except Exception as e:
         print(f"Error Historial: {e}")
@@ -144,7 +148,7 @@ def get_tickers_en_cartera():
     if df.empty: return []
     return df['Ticker'].unique().tolist()
 
-# --- ESCRITURA (CON LIMPIEZA DE CACHÉ) ---
+# --- ESCRITURA ---
 @retry_api_call
 def add_transaction(data):
     try:
@@ -156,10 +160,9 @@ def add_transaction(data):
             float(data.get('Alerta_Alta', 0.0)), float(data.get('Alerta_Baja', 0.0))
         ]
         ws.append_row(row)
-        clear_db_cache() # <--- IMPORTANTE: Limpiamos caché al escribir
+        clear_db_cache()
         return True, "Transacción agregada."
-    except Exception as e:
-        return False, f"Error al guardar: {e}"
+    except Exception as e: return False, f"Error: {e}"
 
 @retry_api_call
 def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
@@ -179,10 +182,9 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
         if idx_fila == -1: return False, "Lote no encontrado."
         ws.update_cell(idx_fila, 6, float(nueva_alta))
         ws.update_cell(idx_fila, 7, float(nueva_baja))
-        clear_db_cache() # <--- Limpiamos caché
+        clear_db_cache()
         return True, "Alertas guardadas."
-    except Exception as e:
-        return False, f"Error: {e}"
+    except Exception as e: return False, f"Error: {e}"
 
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
@@ -225,6 +227,8 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
+        
+        # COMISIONES (Ahora Cocos usará el diccionario general)
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
         
@@ -249,13 +253,11 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             ws_port.update_cell(idx_fila, 3, nueva_cant)
             msg = "Venta PARCIAL registrada."
             
-        clear_db_cache() # <--- Limpiamos caché
+        clear_db_cache()
         return True, msg
+    except Exception as e: return False, f"Error venta: {e}"
 
-    except Exception as e:
-        return False, f"Error venta: {e}"
-
-# --- FAVORITOS (CON CACHÉ) ---
+# --- FAVORITOS ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_favoritos():
@@ -263,13 +265,13 @@ def get_favoritos():
         ws = _get_worksheet("Favoritos")
         vals = ws.col_values(1)
         if not vals: return []
-        clean_favs = []
+        clean = []
         for v in vals:
             v_str = str(v).strip().upper()
             if v_str and v_str != "TICKER":
                 if not v_str.endswith(".BA") and len(v_str) < 9: v_str += ".BA"
-                clean_favs.append(v_str)
-        return list(set(clean_favs))
+                clean.append(v_str)
+        return list(set(clean))
     except: return []
 
 @retry_api_call
@@ -278,10 +280,10 @@ def add_favorito(ticker):
         ws = _get_worksheet("Favoritos")
         ticker = ticker.strip().upper()
         if not ticker.endswith(".BA") and len(ticker) < 9: ticker += ".BA"
-        existentes = get_favoritos() # Usa caché si existe
+        existentes = get_favoritos()
         if ticker in existentes: return False, "Ya existe."
         ws.append_row([ticker])
-        clear_db_cache() # Limpiar caché
+        clear_db_cache()
         return True, "Agregado."
     except Exception as e: return False, f"Error: {e}"
 
@@ -292,12 +294,12 @@ def remove_favorito(ticker):
         cell = ws.find(ticker)
         if cell:
             ws.delete_rows(cell.row)
-            clear_db_cache() # Limpiar caché
+            clear_db_cache()
             return True, "Eliminado."
         cell = ws.find(ticker.replace('.BA', ''))
         if cell:
             ws.delete_rows(cell.row)
-            clear_db_cache() # Limpiar caché
+            clear_db_cache()
             return True, "Eliminado."
         return False, "No encontrado."
     except Exception as e: return False, f"Error: {e}"
