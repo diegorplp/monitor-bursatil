@@ -1,23 +1,29 @@
 import gspread
 import pandas as pd
 from datetime import datetime
-import os # Necesario para checkear si el archivo existe
+import os 
 
-# Importamos las variables de control de config.py
-try:
-    from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
-except ImportError:
-    SHEET_NAME = ""
-    CREDENTIALS_FILE = ""
-    USE_CLOUD_AUTH = False
-    GOOGLE_CREDENTIALS_DICT = {}
-    COMISIONES = {}
-    IVA = 1.21
-    DERECHOS_MERCADO = 0.0008
-    VETA_MINIMO = 50
+# ⚠️ CAMBIO CRÍTICO: Importación directa para que los errores de config.py se muestren.
+from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
 
-# --- LÓGICA DE COMISIONES ---
-# (Se mantiene igual)
+# --- LÓGICA DE COMISIONES (Función auxiliar faltante) ---
+def _calcular_costo_operacion(monto_bruto, broker_key):
+    """Calcula el costo total de una operación (comisiones + derechos + IVA)."""
+    comision_pct = COMISIONES.get(broker_key, COMISIONES['DEFAULT'])
+    
+    # 1. Comisión del Broker (con IVA)
+    costo_comision = monto_bruto * comision_pct * IVA 
+    
+    # 2. Derechos de Mercado (sin IVA)
+    costo_derechos = monto_bruto * DERECHOS_MERCADO
+    
+    costo_total = costo_comision + costo_derechos
+    
+    # 3. Veta (Si el costo total es muy bajo, se aplica un mínimo)
+    if monto_bruto > 0 and costo_total < VETA_MINIMO:
+        return VETA_MINIMO
+        
+    return costo_total
 
 # --- CONEXIÓN INTELIGENTE Y BLINDADA ---
 def _get_worksheet(name=None):
@@ -25,10 +31,10 @@ def _get_worksheet(name=None):
         # Lógica centralizada de conexión
         gc = None
         if USE_CLOUD_AUTH:
-            # MODO NUBE: Usa el diccionario de secretos
+            # MODO NUBE: Usa el diccionario de secretos 
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
-            # MODO LOCAL: Usa el archivo. Agregamos un chequeo de existencia.
+            # MODO LOCAL: Usa el archivo.
             if not os.path.exists(CREDENTIALS_FILE):
                  raise FileNotFoundError(f"Archivo local no encontrado en la ruta: {CREDENTIALS_FILE}")
 
@@ -38,8 +44,12 @@ def _get_worksheet(name=None):
         if name: return sh.worksheet(name)
         return sh.get_worksheet(0)
     except Exception as e:
+        # MEJORA: Mensaje más claro para problemas de permisos de Google Sheets.
         print(f"ERROR CONEXIÓN SHEETS: {e}")
-        # Si la app está en la nube, este error es lo que necesitamos
+        if "spreadsheet not found" in str(e).lower() or "not accessible" in str(e).lower():
+             print("Pista: Verifique que la cuenta de servicio de Google tenga permisos de 'Lector' en la hoja.")
+        
+        # Relanzamos el error para que Streamlit lo muestre
         raise e
 
 # --- LECTURA ---
@@ -49,7 +59,6 @@ def get_portafolio_df():
         data = ws.get_all_records()
         
         if not data: 
-            # Aquí sabemos que conectó pero la fila 2 de datos es nula
             raise ValueError(f"Hoja '{SHEET_NAME}' sin filas de datos válidos (Fila 2 vacía).")
 
         df = pd.DataFrame(data)
@@ -63,7 +72,6 @@ def get_portafolio_df():
 
         return df
     except Exception as e:
-        # En la nube, solo queremos que se muestre el error real
         raise e 
 
 
@@ -77,16 +85,14 @@ def get_historial_df():
         for c in cols_num:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
         return df
-    except: return pd.DataFrame()
+    except Exception: # Retorna un df vacío en caso de error (ej: pestaña "Historial" no existe)
+        return pd.DataFrame()
 
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     if df.empty: return []
     return df['Ticker'].unique().tolist()
     
-# (El resto de funciones de escritura y venta se mantienen igual)
-# (Para evitar que se corte, omite el resto y sube este archivo con el resto de funciones intactas abajo)
-
 # --- ESCRITURA ---
 def add_transaction(data):
     try:
