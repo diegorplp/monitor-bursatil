@@ -101,13 +101,76 @@ def calcular_indicadores(df_historico_raw):
     
     return df_resumen
 
-# --- ANÁLISIS DE PORTAFOLIO (Rentabilidad) ---
 def analizar_portafolio(df_portafolio, series_precios_actuales):
     if df_portafolio.empty: return pd.DataFrame()
 
     df = df_portafolio.copy()
     df_precios = series_precios_actuales.to_frame(name='Precio_Actual')
     df = df.merge(df_precios, left_on='Ticker', right_index=True, how='left')
+
+    # --- FUNCION INTERNA (Debe tener sangría respecto a analizar_portafolio) ---
+    def calc_fila(row):
+        # Si no hay precio actual, devolvemos 0s
+        if pd.isna(row['Precio_Actual']): return pd.Series([0,0,0,0,0,0,0])
+        
+        p_compra = row['Precio_Compra']
+        p_actual = row['Precio_Actual']
+        cant = row['Cantidad']
+        broker = row.get('Broker', 'DEFAULT')
+        ticker = row['Ticker']
+
+        # --- LÓGICA DE BONOS (DIVIDIR POR 100) ---
+        es_bono = ticker in config.TICKERS_CONFIG.get('Bonos', [])
+        divisor = 100 if es_bono else 1
+        
+        # 1. Valor Bruto Actual (Mercado)
+        valor_bruto_actual = (p_actual * cant) / divisor
+        
+        # 2. Inversión Total (Costo Origen Estimado con comisiones de compra)
+        monto_compra_puro = (p_compra * cant) / divisor
+        
+        # Asumimos que pagaste comisiones al entrar. Usamos la regla del broker.
+        comis_compra = calcular_comision_real(monto_compra_puro, broker)
+        inversion_total = monto_compra_puro + comis_compra
+
+        # 3. Valor Salida Neto (Si vendieras hoy)
+        comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker)
+        valor_neto_salida = valor_bruto_actual - comis_venta_estimada
+
+        # 4. Ganancias
+        gan_bruta_monto = valor_bruto_actual - monto_compra_puro
+        gan_neta_monto = valor_neto_salida - inversion_total
+        
+        pct_bruta = (valor_bruto_actual / monto_compra_puro) - 1 if monto_compra_puro else 0
+        pct_neta = (gan_neta_monto / inversion_total) if inversion_total else 0
+
+        return pd.Series([inversion_total, valor_bruto_actual, valor_neto_salida, 
+                          gan_bruta_monto, gan_neta_monto, pct_bruta, pct_neta])
+
+    # --- FIN FUNCION INTERNA ---
+
+    # Aplicamos cálculo
+    cols_calc = ['Inversion_Total', 'Valor_Actual', 'Valor_Salida_Neto', 
+                 'Ganancia_Bruta_Monto', 'Ganancia_Neta_Monto', 
+                 '%_Ganancia_Bruta', '%_Ganancia_Neto']
+    
+    df[cols_calc] = df.apply(calc_fila, axis=1)
+
+    # Limpieza
+    df['%_Ganancia_Bruta'] = df['%_Ganancia_Bruta'].replace([np.inf, -np.inf], np.nan)
+    df['%_Ganancia_Neto'] = df['%_Ganancia_Neto'].replace([np.inf, -np.inf], np.nan)
+
+    # Señales (Prioridad Alertas Manuales)
+    cond_stop_loss = (df['Alerta_Baja'] > 0) & (df['Precio_Actual'] <= df['Alerta_Baja'])
+    cond_take_profit = (df['Alerta_Alta'] > 0) & (df['Precio_Actual'] >= df['Alerta_Alta'])
+    cond_tecnica = (df['%_Ganancia_Neto'] >= 0.02)
+
+    conditions = [cond_stop_loss, cond_take_profit, cond_tecnica]
+    choices = ['STOP LOSS', 'TAKE PROFIT', 'VENDER (Obj)']
+    df['Senal_Venta'] = np.select(conditions, choices, default='NEUTRO')
+    df.loc[df['Precio_Actual'].isna(), 'Senal_Venta'] = 'PRECIO FALTANTE'
+
+    return df
 
 def calc_fila(row):
         # Si no hay precio actual, devolvemos 0s
