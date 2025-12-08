@@ -51,22 +51,18 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- LOGS VISIBLES ---
-with st.expander("🕵️ Logs de Depuración", expanded=True): # Expandido por defecto
-    if st.button("🔥 RECARGAR (Sin Caché)"):
+# --- LOGS PARA VALIDAR ---
+with st.expander("🕵️ Logs de Validación", expanded=True):
+    if st.button("🔄 RECARGAR AHORA"):
         st.cache_data.clear()
         st.rerun()
 
-    logs = st.session_state.get('db_logs', ["⚠️ No llegaron logs de database.py"])
-    st.text_area("Auditoría de Lectura:", value="\n".join(logs), height=300)
+    logs = st.session_state.get('db_logs', ["Sin logs."])
+    st.text_area("Proceso Database:", value="\n".join(logs), height=250)
     
     if not df_hist.empty:
-        st.write("Datos cargados:")
-        st.dataframe(df_hist.head())
-        if 'Resultado_Neto' in df_hist.columns:
-             st.write(f"Suma comprobada en UI: {df_hist['Resultado_Neto'].sum()}")
-    else:
-        st.error("El DataFrame de Historial llegó vacío.")
+        st.write("Muestra de datos (Verifica la columna Resultado_Neto):")
+        st.dataframe(df_hist[['Ticker', 'Resultado_Neto', 'Alerta_Alta']].head())
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
