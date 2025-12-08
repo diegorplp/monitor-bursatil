@@ -119,92 +119,74 @@ def get_portafolio_df():
 
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
+# --- EN database.py (Reemplazo FINAL de get_historial_df) ---
+
+@st.cache_data(ttl=60, show_spinner=False)
+@retry_api_call
 def get_historial_df():
+    """
+    Versión estricta: Solo lee la hoja llamada 'Historial'.
+    No adivina, no itera, no busca patrones.
+    """
     try:
         sh = _get_connection()
-        target_ws = None
         
-        # 1. ESTRATEGIA PRIORITARIA: Buscar por nombre exacto "Historial"
-        # Esto evita que el sistema "adivine" y termine leyendo Transacciones.
+        # 1. ACCESO DIRECTO (Sin bucles)
+        # Si la hoja se llama "Historial" (verificado en tu diagnóstico), esto DEBE funcionar.
         try:
-            target_ws = sh.worksheet("Historial")
+            ws = sh.worksheet("Historial")
         except WorksheetNotFound:
-            # Si falla, buscamos alguna que contenga "HISTORIAL" en el nombre (ej: "Historial 2024")
-            for ws in sh.worksheets():
-                if "HISTORIAL" in ws.title.strip().upper():
-                    target_ws = ws
+            # Último intento: buscar insensible a mayúsculas/espacios
+            ws_found = None
+            for w in sh.worksheets():
+                if w.title.strip().lower() == "historial":
+                    ws_found = w
                     break
-        
-        # 2. ESTRATEGIA DE RESPALDO (ADN): Solo si NO se encontró por nombre
-        if not target_ws:
-            all_worksheets = sh.worksheets()
-            for ws in all_worksheets:
-                title_upper = ws.title.strip().upper()
-                
-                # CRÍTICO: Excluir explícitamente "Transacciones" o "Portafolio" para no confundirse
-                if "TRANSACCIONES" in title_upper or "PORTAFOLIO" in title_upper:
-                    continue
+            
+            if ws_found:
+                ws = ws_found
+            else:
+                print("ERROR: No se encuentra la hoja 'Historial' exacta.")
+                return pd.DataFrame()
 
-                try:
-                    headers = ws.row_values(1)
-                    headers_upper = [str(h).strip().upper() for h in headers]
-                    
-                    # Exclusión de seguridad (columnas de Portafolio)
-                    if any(c in headers_upper for c in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
-                        continue
-                    
-                    # Búsqueda de Resultado
-                    if any("RESULT" in h or "GANANCIA" in h or "P&L" in h for h in headers_upper):
-                        target_ws = ws
-                        break
-                except: continue
-        
-        if not target_ws:
-            print("ERROR CRÍTICO: No se encontró la hoja Historial.")
-            return pd.DataFrame()
-
-        # --- PROCESAMIENTO DE DATOS ---
-        data = target_ws.get_all_records()
+        # 2. LECTURA
+        data = ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # Normalizar encabezados
-        df.columns = [re.sub(r'\s+', '_', str(c).strip()) for c in df.columns]
+        # 3. NORMALIZACIÓN DE COLUMNAS (Para que "Resultado Neto" sea "Resultado_Neto")
+        # Quitamos espacios y pasamos a formato estándar
+        df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
-        # Renombrar columna Resultado (Priorizando 'Neto')
-        cols_upper = [c.upper() for c in df.columns]
-        mapa_cols = {c.upper(): c for c in df.columns}
+        # Mapeo flexible para encontrar la columna de ganancia
+        # Buscamos variantes comunes y renombramos a la oficial 'Resultado_Neto'
+        col_map = {}
+        for c in df.columns:
+            c_upper = c.upper()
+            if "RESULTADO" in c_upper and "NETO" in c_upper:
+                col_map[c] = 'Resultado_Neto'
+            elif "GANANCIA" in c_upper and "REALIZADA" in c_upper:
+                col_map[c] = 'Resultado_Neto'
+            elif c_upper == "P&L":
+                col_map[c] = 'Resultado_Neto'
         
-        col_resultado_real = None
-        if 'RESULTADO_NETO' in cols_upper:
-            col_resultado_real = mapa_cols['RESULTADO_NETO']
-        else:
-            # Buscar columna que contenga NETO
-            candidatos_neto = [c for c in df.columns if 'NETO' in c.upper() and ('RESULT' in c.upper() or 'GANANCIA' in c.upper())]
-            if candidatos_neto:
-                col_resultado_real = candidatos_neto[0]
-            else:
-                # Fallback general
-                candidatos_gen = [c for c in df.columns if 'RESULT' in c.upper() or 'GANANCIA' in c.upper()]
-                if candidatos_gen:
-                    col_resultado_real = candidatos_gen[0]
+        if col_map:
+            df.rename(columns=col_map, inplace=True)
 
-        if col_resultado_real:
-            df.rename(columns={col_resultado_real: 'Resultado_Neto'}, inplace=True)
-        
-        # Limpieza numérica y forzado de tipos (Esencial para la suma)
+        # 4. LIMPIEZA NUMÉRICA (Usando tu función _clean_number_str actualizada)
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns:
-                df[c] = df[c].apply(_clean_number_str) # Tu nueva función robusta
+                df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
             
         return df
 
     except Exception as e:
-        print(f"Error Historial Global: {e}")
+        print(f"Error fatal leyendo Historial: {e}")
         return pd.DataFrame()
+
 
 def get_tickers_en_cartera():
     """Función crítica para el manager."""
@@ -244,13 +226,3 @@ def add_favorito(t): pass
 def remove_favorito(t): pass
 def actualizar_alertas_lote(*args): pass
 
-# --- EN database.py (Agregar al final) ---
-
-@retry_api_call
-def debug_get_sheet_names():
-    """Retorna la lista cruda de nombres de hojas en el Spreadsheet."""
-    try:
-        sh = _get_connection()
-        return [ws.title for ws in sh.worksheets()]
-    except Exception as e:
-        return [f"Error leyendo hojas: {str(e)}"]
