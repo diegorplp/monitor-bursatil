@@ -9,6 +9,7 @@ from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
 except ImportError:
+    # Valores default para evitar rupturas si config falla
     SHEET_NAME = ""
     CREDENTIALS_FILE = ""
     COMISIONES = {}
@@ -31,25 +32,37 @@ def _calcular_costo_operacion(monto_bruto, broker):
         return monto_bruto * tasa
 
 def _clean_number_str(val):
-    """Limpieza agresiva de números."""
+    """Limpieza agresiva de números con soporte para formato contable negativo."""
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
     
     s = str(val).strip()
-    # Eliminar todo lo que no sea numero, punto, coma o signo menos
+    
+    # 1. Detectar negativo contable: (1.500,00) -> -1.500,00
+    is_negative_parenthesis = False
+    if s.startswith('(') and s.endswith(')'):
+        is_negative_parenthesis = True
+    
+    # 2. Eliminar todo lo que no sea numero, punto, coma o signo menos
     s = re.sub(r'[^\d,.-]', '', s)
     
     if not s: return 0.0
 
+    # 3. Lógica de Puntos y Comas (Latam vs USA)
     if '.' in s and ',' in s:
         if s.rfind('.') < s.rfind(','): 
-            s = s.replace('.', '').replace(',', '.') # Latino
+            s = s.replace('.', '').replace(',', '.') # Latino (1.000,50 -> 1000.50)
         else: 
-            s = s.replace(',', '') # USA
+            s = s.replace(',', '') # USA (1,000.50 -> 1000.50)
     elif ',' in s: 
-        s = s.replace(',', '.')
+        s = s.replace(',', '.') # Solo coma (150,50 -> 150.50)
     
-    try: return float(s)
+    try: 
+        final_val = float(s)
+        # Aplicar negativo si venía entre paréntesis
+        if is_negative_parenthesis:
+            final_val = final_val * -1
+        return final_val
     except: return 0.0
 
 def retry_api_call(func):
@@ -67,7 +80,7 @@ def retry_api_call(func):
         return func(*args, **kwargs)
     return wrapper
 
-# --- CONEXIÓN INTELIGENTE (EL FIX) ---
+# --- CONEXIÓN INTELIGENTE ---
 def _get_worksheet(name=None):
     try:
         if USE_CLOUD_AUTH:
@@ -78,18 +91,13 @@ def _get_worksheet(name=None):
         sh = gc.open(SHEET_NAME)
         
         if name:
-            # Búsqueda insensible a mayúsculas/espacios
             lista_hojas = sh.worksheets()
             for ws in lista_hojas:
                 if ws.title.strip().lower() == name.strip().lower():
-                    # print(f"DEBUG: Pestaña '{ws.title}' encontrada.")
                     return ws
-            
-            # Si llegamos acá, NO EXISTE. No devolvemos la 0.
             print(f"ERROR CRÍTICO: No se encontró la pestaña '{name}'. Disponibles: {[w.title for w in lista_hojas]}")
             raise WorksheetNotFound(f"Pestaña '{name}' no existe.")
             
-        # Si name es None, devolvemos la primera (comportamiento default para Portafolio)
         return sh.get_worksheet(0)
 
     except Exception as e:
@@ -107,11 +115,12 @@ def clear_db_cache():
 @retry_api_call
 def get_portafolio_df():
     try:
-        ws = _get_worksheet() # Sin nombre -> Hoja 0 (Transacciones)
+        ws = _get_worksheet() 
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
+        # Normalización básica de columnas
         df.columns = [str(c).strip() for c in df.columns]
         
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
@@ -140,29 +149,39 @@ def get_portafolio_df():
         print(f"Error Portafolio: {e}")
         return pd.DataFrame()
 
-# --- LECTURA HISTORIAL ---
+# --- LECTURA HISTORIAL (FIX PRINCIPAL) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
-        # Pedimos explícitamente "Historial"
         ws = _get_worksheet("Historial")
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # Normalizar columnas (ej: "Resultado Neto" -> "Resultado_Neto")
-        df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
+        # FIX: Normalización robusta (regex para espacios)
+        # Transforma "Resultado Neto" o "Resultado  Neto" en "Resultado_Neto"
+        df.columns = [re.sub(r'\s+', '_', str(c).strip()) for c in df.columns]
         
-        # Validación de seguridad: Si no tiene Resultado_Neto, algo está mal
+        # Validación relajada: Si falta Resultado_Neto, intentamos calcularlo o advertir, 
+        # pero no devolvemos vacío inmediatamente si hay otras columnas útiles.
         if 'Resultado_Neto' not in df.columns:
-            print(f"ERROR: Hoja Historial leída pero faltan columnas. Cols: {df.columns.tolist()}")
-            return pd.DataFrame()
-
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
+            # Fallback: buscar nombres parecidos manualmente si el regex falló
+            found = False
+            for c in df.columns:
+                if 'RESULTADO' in c.upper() and 'NETO' in c.upper():
+                    df.rename(columns={c: 'Resultado_Neto'}, inplace=True)
+                    found = True
+                    break
+            if not found:
+                print(f"ERROR: No se encontró columna 'Resultado_Neto'. Cols: {df.columns.tolist()}")
+                # Devolvemos df igual para no romper dashboard, pero sin datos calculables
+        
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Costo_Total', 'Ingreso_Neto']
         for c in cols_num:
-            if c in df.columns: df[c] = df[c].apply(_clean_number_str)
+            if c in df.columns: 
+                df[c] = df[c].apply(_clean_number_str)
         
         return df
     except Exception as e:
@@ -174,7 +193,7 @@ def get_tickers_en_cartera():
     if df.empty: return []
     return df['Ticker'].unique().tolist()
 
-# --- ESCRITURA ---
+# --- ESCRITURA (Sin cambios mayores, solo mantenemos compatibilidad) ---
 @retry_api_call
 def add_transaction(data):
     try:
@@ -251,7 +270,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cant_vender > cant_tenencia: return False, "Cantidad insuficiente."
 
-        # Detectar Bono (Dividir por 100)
         from config import TICKERS_CONFIG
         es_bono = ticker in TICKERS_CONFIG.get('Bonos', [])
         divisor = 100 if es_bono else 1
@@ -266,6 +284,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         ingreso_neto_venta = monto_venta_bruto - costo_salida
         resultado = ingreso_neto_venta - costo_total_origen
 
+        # Nombres de columnas estandarizados para coincidir con la lectura
         row_h = [
             str(ticker), str(fecha_compra_str), precio_compra,
             str(fecha_venta_str), precio_vta, cant_vender,
@@ -287,7 +306,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         return True, msg
     except Exception as e: return False, f"Error venta: {e}"
 
-# --- FAVORITOS ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_favoritos():

@@ -47,23 +47,12 @@ if not df_port.empty:
     if 'Inversion_Total' in df_validos.columns:
         inversion_total_activa = df_validos['Inversion_Total'].sum()
 
-# --- CÁLCULOS: HISTORIAL (REALIZADO) - CORREGIDO ---
+# --- CÁLCULOS: HISTORIAL (REALIZADO) ---
 ganancia_realizada = 0.0
-if not df_hist.empty:
-    # CORRECCIÓN: Confiamos en que database.py ya devolvió números.
-    # Solo sumamos directamente.
-    
-    # Buscamos la columna correcta (normalizada o no)
-    col_res = None
-    if 'Resultado_Neto' in df_hist.columns:
-        col_res = 'Resultado_Neto'
-    elif 'Resultado Neto' in df_hist.columns:
-        col_res = 'Resultado Neto'
-        
-    if col_res:
-        # Forzamos a numérico simple por si quedó algún residuo, pero SIN borrar puntos
-        s_res = pd.to_numeric(df_hist[col_res], errors='coerce').fillna(0.0)
-        ganancia_realizada = s_res.sum()
+if not df_hist.empty and 'Resultado_Neto' in df_hist.columns:
+    # Como database.py ya limpió y normalizó, confiamos en la columna 'Resultado_Neto'.
+    # Nos aseguramos de que sea float por si acaso, llenando NaNs con 0.
+    ganancia_realizada = pd.to_numeric(df_hist['Resultado_Neto'], errors='coerce').fillna(0.0).sum()
 
 # --- RESULTADO TOTAL ---
 resultado_global = ganancia_latente + ganancia_realizada
@@ -86,7 +75,11 @@ if not df_validos.empty:
     with g1:
         st.subheader("Composición")
         df_pie = df_validos.groupby('Ticker')['Valor_Actual'].sum().reset_index()
-        base = alt.Chart(df_pie).encode(theta=alt.Theta("Valor_Actual", stack=True), color=alt.Color("Ticker"), tooltip=["Ticker", alt.Tooltip("Valor_Actual", format="$,.0f")])
+        base = alt.Chart(df_pie).encode(
+            theta=alt.Theta("Valor_Actual", stack=True), 
+            color=alt.Color("Ticker"), 
+            tooltip=["Ticker", alt.Tooltip("Valor_Actual", format="$,.0f")]
+        )
         pie = base.mark_arc(outerRadius=120)
         st.altair_chart(pie, use_container_width=True)
 
@@ -96,19 +89,28 @@ if not df_validos.empty:
         chart = alt.Chart(df_bar).mark_bar().encode(
             x=alt.X('Ticker', sort='-y'), 
             y='Ganancia_Neta_Monto', 
-            color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("#21c354"), alt.value("#ff4b4b"))
+            color=alt.condition(
+                alt.datum.Ganancia_Neta_Monto > 0, 
+                alt.value("#21c354"), 
+                alt.value("#ff4b4b")
+            ),
+            tooltip=["Ticker", alt.Tooltip("Ganancia_Neta_Monto", format="$,.0f")]
         )
         st.altair_chart(chart, use_container_width=True)
 
 # --- DIAGNÓSTICO (DEBUGGER) ---
 with st.expander("🕵️ Diagnóstico de Historial", expanded=False):
     if df_hist.empty:
-        st.info("Historial vacío.")
+        st.info("Historial vacío o no se pudo leer.")
     else:
         st.write(f"Filas leídas: {len(df_hist)}")
-        if col_res:
-            st.write(f"Suma calculada: {ganancia_realizada}")
-            st.dataframe(df_hist[['Ticker', col_res]].head())
+        if 'Resultado_Neto' in df_hist.columns:
+            st.write(f"Suma calculada: {ganancia_realizada:,.2f}")
+            # Muestra una muestra de datos crudos para ver si hay errores de parseo
+            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].head(), use_container_width=True)
+        else:
+            st.error("Columna 'Resultado_Neto' no encontrada tras normalización.")
+            st.write("Columnas disponibles:", df_hist.columns.tolist())
 
 # Tabla final
 if not df_hist.empty:
