@@ -22,7 +22,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
     """Descarga, calcula y fusiona datos nuevos."""
     if not lista_tickers: return
 
-    # Usamos st.spinner solo si no es silencioso
     contexto = st.spinner(f"Cargando {nombre_panel}...") if not silent else st.empty()
     
     with contexto:
@@ -33,7 +32,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             if not silent: st.warning(f"No se encontraron datos para {nombre_panel}.")
             return
 
-        # 2. MEP (Si aplica)
+        # 2. MEP
         if 'AL30.BA' in df_nuevo_raw.columns:
             mep, var = market_logic.calcular_mep(df_nuevo_raw)
             if mep:
@@ -85,13 +84,20 @@ def actualizar_todo(silent=False):
     t_cart = database.get_tickers_en_cartera()
     if t_cart: update_data(t_cart, "Cartera", silent=silent)
     
-    # 3. Favoritos (Opcional, pero útil)
+    # 3. Favoritos
     t_fav = database.get_favoritos()
     if t_fav: update_data(t_fav, "Favoritos", silent=True)
 
 # --- WIDGET DE SIDEBAR ---
 def mostrar_boton_actualizar():
     """Muestra el estado y botón en la barra lateral."""
+    
+    # --- CORRECCIÓN: ASEGURAR QUE EL ESTADO EXISTA ---
+    # Si entramos directo a una sub-página, esto evita el crash
+    if 'last_update' not in st.session_state:
+        init_session_state()
+    # -------------------------------------------------
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("📡 Datos de Mercado")
     
