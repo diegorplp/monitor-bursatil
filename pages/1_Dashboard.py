@@ -19,7 +19,7 @@ try:
     df_port = database.get_portafolio_df()
     df_hist = database.get_historial_df()
 except Exception as e:
-    st.error(f"Error fatal en carga: {e}")
+    st.error(f"Error BD: {e}")
     st.stop()
 
 # --- CÁLCULOS ---
@@ -51,19 +51,22 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- DEBUGGING ROBUSTO ---
-with st.expander("🕵️ Logs de Depuración"):
-    if st.button("🔥 RECARGAR TODO"):
+# --- LOGS VISIBLES ---
+with st.expander("🕵️ Logs de Depuración", expanded=True): # Expandido por defecto
+    if st.button("🔥 RECARGAR (Sin Caché)"):
         st.cache_data.clear()
         st.rerun()
 
-    # Recuperamos logs de Session State (más seguro que attrs)
-    logs = st.session_state.get('db_logs', ["No hay logs registrados."])
-    st.text_area("Log Database:", value="\n".join(logs), height=300)
+    logs = st.session_state.get('db_logs', ["⚠️ No llegaron logs de database.py"])
+    st.text_area("Auditoría de Lectura:", value="\n".join(logs), height=300)
     
     if not df_hist.empty:
-        st.write("Vista previa Historial (Primeras 5 filas):")
+        st.write("Datos cargados:")
         st.dataframe(df_hist.head())
+        if 'Resultado_Neto' in df_hist.columns:
+             st.write(f"Suma comprobada en UI: {df_hist['Resultado_Neto'].sum()}")
+    else:
+        st.error("El DataFrame de Historial llegó vacío.")
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
