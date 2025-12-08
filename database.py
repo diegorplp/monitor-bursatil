@@ -2,6 +2,7 @@ import gspread
 import pandas as pd
 import time
 import streamlit as st
+import re  # <--- AGREGAR ESTO
 from gspread.exceptions import APIError
 from datetime import datetime
 try:
@@ -31,13 +32,27 @@ def _calcular_costo_operacion(monto_bruto, broker):
         return monto_bruto * tasa
 
 def _clean_number_str(val):
+    """
+    Limpieza agresiva de números. Elimina $ y espacios invisibles.
+    """
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
-    s = str(val).strip().replace('$', '').replace(' ', '')
+    
+    # Usamos Regex para dejar solo dígitos, puntos, comas y signo menos
+    s = str(val).strip()
+    s = re.sub(r'[^\d,.-]', '', s) 
+    
+    if not s: return 0.0
+
+    # Lógica de detección de formato (Latino vs USA)
     if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') 
-        else: s = s.replace(',', '') 
-    elif ',' in s: s = s.replace(',', '.')
+        if s.rfind('.') < s.rfind(','): # 1.000,50 (Latino)
+            s = s.replace('.', '').replace(',', '.') 
+        else: # 1,000.50 (USA)
+            s = s.replace(',', '') 
+    elif ',' in s: # 100,50
+        s = s.replace(',', '.')
+    
     try: return float(s)
     except: return 0.0
 
@@ -124,14 +139,17 @@ def get_historial_df():
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        df.columns = [str(c).strip() for c in df.columns]
         
-        if 'Resultado_Neto' not in df.columns and 'Ticker' in df.columns:
-             df.columns = [c.replace(' ', '_') for c in df.columns]
-
+        # Normalización agresiva de columnas: 
+        # Quita espacios y reemplaza espacios internos por guion bajo
+        # Ej: " Resultado Neto " -> "Resultado_Neto"
+        df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
+        
+        # Limpieza numérica de las columnas clave
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
-            if c in df.columns: df[c] = df[c].apply(_clean_number_str)
+            if c in df.columns:
+                df[c] = df[c].apply(_clean_number_str)
         
         return df
     except Exception as e:
