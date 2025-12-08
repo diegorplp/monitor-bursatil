@@ -1,12 +1,9 @@
 import gspread
 import pandas as pd
 from datetime import datetime
-
-# Importamos todo lo necesario de config, incluyendo los flags de la nube
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
 except ImportError:
-    # Valores dummy para evitar crash si config falla
     SHEET_NAME = ""
     CREDENTIALS_FILE = ""
     USE_CLOUD_AUTH = False
@@ -16,7 +13,7 @@ except ImportError:
     DERECHOS_MERCADO = 0.0008
     VETA_MINIMO = 50
 
-# --- LÓGICA DE COMISIONES (Privada) ---
+# --- LÓGICA DE COMISIONES ---
 def _calcular_costo_operacion(monto_bruto, broker):
     broker = str(broker).upper().strip()
     if broker == 'VETA':
@@ -30,14 +27,15 @@ def _calcular_costo_operacion(monto_bruto, broker):
         tasa = COMISIONES.get(broker, 0.006)
         return monto_bruto * tasa
 
-# --- CONEXIÓN ---
+# --- CONEXIÓN INTELIGENTE (CLOUD vs LOCAL) ---
 def _get_worksheet(name=None):
     try:
+        gc = None
         if USE_CLOUD_AUTH:
             # MODO NUBE: Usamos el diccionario de secretos
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
-            # MODO LOCAL: Usamos el archivo físico
+            # MODO LOCAL: Usamos el archivo físico. Si falla, el try-except de afuera lo captura.
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
             
         sh = gc.open(SHEET_NAME)
@@ -50,55 +48,51 @@ def _get_worksheet(name=None):
 # --- LECTURA ---
 def get_portafolio_df():
     try:
-        ws = _get_worksheet() # Conecta OK
+        ws = _get_worksheet()
+        data = ws.get_all_records() # Lee como lista de dicts (requiere header perfecto)
         
-        # DEBUG: Intentamos leer crudo sin formato
-        raw_values = ws.get_all_values()
-        
-        if not raw_values:
-            raise ValueError(f"La hoja '{ws.title}' está TOTALMENTE vacía (0 celdas con datos).")
-            
-        # Si hay datos, veamos qué son
-        header = raw_values[0]
-        row_count = len(raw_values)
-        
-        # Validamos si gspread lo lee como dict
-        data = ws.get_all_records()
-        
+        # VALIDACION DE DATOS VACIOS
         if not data:
-            # Aquí está el problema. Hay datos visuales pero el record devuelve vacío.
-            # Probablemente el header está mal o hay filas vacías interactivas.
-            raise ValueError(
-                f"Error Lógico Gspread: Hay {row_count} filas crudas, pero get_all_records devolvió 0.\n"
-                f"Encabezados leídos: {header}\n"
-                f"Ejemplo Fila 2: {raw_values[1] if row_count > 1 else 'N/A'}"
-            )
+            # Si data está vacío, es porque la hoja está vacía o el header es incorrecto.
+            # Intenta leer crudo para debug
+            raw_values = ws.get_all_values()
+            if len(raw_values) <= 1 or not raw_values[1][0]:
+                # No hay filas de datos
+                raise ValueError("Hoja vacía o solo con encabezado. La app devolvió 0 filas de datos.")
+            else:
+                # El problema es el encabezado
+                 raise ValueError("Hoja con datos, pero gspread falló. Revisa que los encabezados sean únicos y exactos.")
 
         df = pd.DataFrame(data)
-        # ... (Resto del código de limpieza igual) ...
         df.columns = [c.strip() for c in df.columns]
         
+        # ... (Validaciones y limpieza de tipos)
+        expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
+        if not all(c in df.columns for c in expected):
+            raise ValueError(f"Faltan columnas: {expected}. Leídas: {df.columns.tolist()}")
+
         def fix_ticker(t):
             t = str(t).strip().upper()
             if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        # Tipos
+        if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
+        if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
+        if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
+
         df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce')
         df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce')
+        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0)
+        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0)
         
         df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
-        
-        if df.empty:
-            raise ValueError(f"Leí datos pero al limpiar quedó vacío. Chequea tipos de datos.\nData cruda: {data[:1]}")
+        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
 
         return df
-
     except Exception as e:
-        # Propagamos el error para verlo en el cartel rojo del Home
-        raise e
-
+        # Aquí capturamos el error real de la nube
+        raise e 
 
 def get_historial_df():
     try:
@@ -116,6 +110,9 @@ def get_tickers_en_cartera():
     df = get_portafolio_df()
     if df.empty: return []
     return df['Ticker'].unique().tolist()
+    
+# (El resto de funciones de escritura y venta se mantienen igual)
+# (Para evitar que se corte, omite el resto y sube este archivo con el resto de funciones intactas abajo)
 
 # --- ESCRITURA ---
 def add_transaction(data):
