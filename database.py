@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime
 import os 
 
-# ⚠️ CAMBIO CRÍTICO: Importación directa para que los errores de config.py se muestren.
 from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
 
 # --- LÓGICA DE COMISIONES (Función auxiliar faltante) ---
