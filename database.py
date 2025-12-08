@@ -24,17 +24,18 @@ def _calcular_costo_operacion(monto_bruto, broker_key):
         
     return costo_total
 
-# --- CONEXIÓN INTELIGENTE Y BLINDADA ---
 def _get_worksheet(name=None):
     try:
         # Lógica centralizada de conexión
         gc = None
-        if USE_CLOUD_AUTH:
+        # ⚠️ CAMBIO CRÍTICO: Chequeamos la existencia de las credenciales de la nube (si existen, estamos en la nube)
+        if GOOGLE_CREDENTIALS_DICT is not None and GOOGLE_CREDENTIALS_DICT != {}:
             # MODO NUBE: Usa el diccionario de secretos 
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
             # MODO LOCAL: Usa el archivo.
             if not os.path.exists(CREDENTIALS_FILE):
+                 # Si no existe, lanza el error y la app se detiene.
                  raise FileNotFoundError(f"Archivo local no encontrado en la ruta: {CREDENTIALS_FILE}")
 
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
