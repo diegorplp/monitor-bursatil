@@ -13,25 +13,21 @@ except ImportError:
 
 # --- UTILIDADES ---
 def _clean_number_str(val):
-    """Limpia números manejando formatos AR (1.000,00) y US (1,000.00)."""
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
-    
     s = str(val).strip()
     is_negative = s.startswith('(') and s.endswith(')')
     if is_negative: s = s.replace('(', '').replace(')', '')
     s = re.sub(r'[^\d,.-]', '', s) 
     if not s: return 0.0
-
     if ',' in s and '.' in s:
-        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') # AR
-        else: s = s.replace(',', '') # US
+        if s.rfind(',') > s.rfind('.'): s = s.replace('.', '').replace(',', '.') 
+        else: s = s.replace(',', '') 
     elif ',' in s:
-        if s.count(',') > 1: s = s.replace(',', '') # US Miles
-        else: s = s.replace(',', '.') # AR Decimal
+        if s.count(',') > 1: s = s.replace(',', '') 
+        else: s = s.replace(',', '.') 
     elif '.' in s:
-        if s.count('.') > 1: s = s.replace('.', '') # AR Miles
-    
+        if s.count('.') > 1: s = s.replace('.', '') 
     try:
         val_float = float(s)
         return -val_float if is_negative else val_float
@@ -50,122 +46,143 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- DEBUGGING PÚBLICO ---
 def get_all_sheet_names():
-    """Devuelve nombres de las hojas para diagnóstico en UI."""
     try:
         sh = _get_connection()
         return [ws.title for ws in sh.worksheets()]
     except: return []
 
-# --- LECTURA ---
+# --- LECTURA PORTAFOLIO ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
     try:
         sh = _get_connection()
-        # Asumimos que Portafolio siempre es la primera o se llama 'Transacciones'/'Portafolio'
         ws = sh.get_worksheet(0) 
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
-        
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
-        
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
-            
         if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
     except: return pd.DataFrame()
 
+# --- LECTURA HISTORIAL (MODO DEBUG EXTREMO) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
-    """
-    ESTRATEGIA BLINDADA:
-    1. Itera todas las hojas.
-    2. Lee SOLO la primera fila (headers).
-    3. Si tiene columnas prohibidas (Alerta, CoolDown), la descarta.
-    4. Si tiene columnas deseadas (Resultado, Ganancia, P&L), esa es la buena.
-    """
+    logs = [] # Aquí acumularemos la evidencia forense
+    logs.append("--- INICIO DE DEBUGGING ---")
+    
     try:
         sh = _get_connection()
         worksheets = sh.worksheets()
+        logs.append(f"Hojas encontradas: {[w.title for w in worksheets]}")
+        
         target_ws = None
         
-        # --- BÚSQUEDA INTELIGENTE DE HOJA ---
-        for ws in worksheets:
+        # Iteramos hoja por hoja
+        for i, ws in enumerate(worksheets):
+            title = ws.title.strip()
+            logs.append(f"\n[Analizando Hoja {i}: '{title}']")
+            
+            # Leemos headers
             try:
-                # Leemos solo headers para no gastar cuota leyendo toda la hoja
-                headers = ws.row_values(1) 
+                headers = ws.row_values(1)
+                logs.append(f"Headers Crudos: {headers}")
                 headers_upper = [str(h).strip().upper() for h in headers]
-                
-                # 1. FILTRO DE RECHAZO (Si tiene esto, ES EL PORTAFOLIO, HUIR)
-                if "COOLDOWN_ALTA" in headers_upper or "ALERTA_ALTA" in headers_upper:
-                    continue 
-
-                # 2. FILTRO DE ACEPTACIÓN
-                keywords = ["RESULT", "GANANCIA", "P&L", "NETO"]
-                if any(k in h for h in headers_upper for k in keywords):
-                    target_ws = ws
-                    break
-                
-                # 3. FILTRO POR NOMBRE (Fallback si los headers están raros)
-                if "HISTORIAL" in ws.title.strip().upper():
-                    target_ws = ws
-                    # No hacemos break inmediato por si acaso es un historial viejo,
-                    # pero si no encontramos otro mejor, usaremos este.
-            except:
+            except Exception as e:
+                logs.append(f"Error leyendo headers: {e}")
                 continue
 
+            # CRITERIO 1: Rechazo inmediato por columnas de Portafolio
+            columnas_prohibidas = ['COOLDOWN_ALTA', 'ALERTA_ALTA', 'ALERTA_BAJA']
+            encontro_prohibida = any(p in headers_upper for p in columnas_prohibidas)
+            
+            if encontro_prohibida:
+                logs.append("❌ RECHAZADA: Detectadas columnas de Portafolio/Alertas.")
+                continue
+
+            # CRITERIO 2: Aceptación por Nombre
+            if title.upper() == "HISTORIAL":
+                logs.append("✅ SELECCIONADA: Coincidencia exacta de nombre 'Historial'.")
+                target_ws = ws
+                break
+            
+            # CRITERIO 3: Aceptación por Contenido (si el nombre falló)
+            keywords = ["RESULT", "GANANCIA", "P&L", "NETO"]
+            matches = [k for k in keywords if any(k in h for h in headers_upper)]
+            
+            if matches:
+                logs.append(f"✅ SELECCIONADA: Encontradas palabras clave {matches}")
+                target_ws = ws
+                break
+            else:
+                logs.append("ℹ️ IGNORADA: No parece ser relevante.")
+
         if not target_ws:
-            print("ERROR: No se encontró hoja de Historial válida.")
-            return pd.DataFrame()
+            logs.append("\n❌ FATAL: Ninguna hoja pasó los filtros.")
+            df_vacio = pd.DataFrame()
+            df_vacio.attrs['debug_logs'] = logs
+            return df_vacio
 
-        # --- LECTURA DE LA HOJA ELEGIDA ---
+        # --- LECTURA ---
+        logs.append(f"\n[Leyendo datos de: '{target_ws.title}']")
         data = target_ws.get_all_records()
-        if not data: return pd.DataFrame()
         
-        df = pd.DataFrame(data)
-        
-        # Validar de nuevo por si acaso
-        if 'CoolDown_Alta' in df.columns or 'Alerta_Alta' in df.columns:
-            return pd.DataFrame() # Retorno vacío de seguridad
+        if not data: 
+            logs.append("La hoja estaba vacía.")
+            df = pd.DataFrame()
+        else:
+            df = pd.DataFrame(data)
+            logs.append(f"Filas cargadas: {len(df)}")
+            logs.append(f"Columnas iniciales: {list(df.columns)}")
 
-        # Normalizar columnas
-        df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
-        
-        # Renombrar columna Resultado
-        col_map = {}
-        for c in df.columns:
-            cu = c.upper()
-            if "RESULTADO" in cu and "NETO" in cu: col_map[c] = 'Resultado_Neto'
-            elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
-            elif cu == "P&L": col_map[c] = 'Resultado_Neto'
-        
-        if col_map: df.rename(columns=col_map, inplace=True)
-        
-        # Conversión Numérica
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
-        for c in cols_num:
-            if c in df.columns:
-                df[c] = df[c].apply(_clean_number_str)
-                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+            # Validación final de seguridad
+            if 'CoolDown_Alta' in df.columns:
+                logs.append("🚨 ERROR CRÍTICO: Gspread devolvió datos de Portafolio aunque seleccionamos Historial. Esto indica un problema grave de caché o índices.")
+                # NO retornamos estos datos corruptos
+                df = pd.DataFrame()
+            else:
+                # Normalización
+                df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
                 
+                col_map = {}
+                for c in df.columns:
+                    cu = c.upper()
+                    if "RESULTADO" in cu and "NETO" in cu: col_map[c] = 'Resultado_Neto'
+                    elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
+                    elif cu == "P&L": col_map[c] = 'Resultado_Neto'
+                
+                if col_map: 
+                    df.rename(columns=col_map, inplace=True)
+                    logs.append(f"Renombrado de columnas: {col_map}")
+
+                # Limpieza numérica
+                cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
+                for c in cols_num:
+                    if c in df.columns:
+                        df[c] = df[c].apply(_clean_number_str)
+                        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+
+        # Adjuntar logs al dataframe (Truco para pasarlos al frontend)
+        df.attrs['debug_logs'] = logs
         return df
 
     except Exception as e:
-        print(f"Error leyendo historial: {e}")
-        return pd.DataFrame()
+        logs.append(f"Excepción Global: {e}")
+        df = pd.DataFrame()
+        df.attrs['debug_logs'] = logs
+        return df
 
-# Funciones dummy para manager
+# Funciones dummy
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     return df['Ticker'].unique().tolist() if not df.empty else []
-
 def get_favoritos(): return []
 def add_transaction(d): return True, "Ok"
 def registrar_venta(*a, **k): return False, "Mantenimiento"

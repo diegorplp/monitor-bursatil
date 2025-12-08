@@ -18,6 +18,10 @@ if 'precios_actuales' not in st.session_state or st.session_state.precios_actual
 try:
     df_port = database.get_portafolio_df()
     df_hist = database.get_historial_df()
+    
+    # RECUPERAR LOGS DEL DATAFRAME
+    debug_logs = getattr(df_hist, 'attrs', {}).get('debug_logs', ["No hay logs disponibles."])
+    
 except Exception as e:
     st.error(f"Error BD: {e}")
     st.stop()
@@ -51,32 +55,23 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- DIAGNÓSTICO AVANZADO ---
-with st.expander("🕵️ Diagnóstico de Datos"):
-    c_diag_1, c_diag_2 = st.columns([1, 3])
-    with c_diag_1:
-        if st.button("🔄 Reset Caché"):
-            st.cache_data.clear()
-            st.rerun()
-    with c_diag_2:
-        hojas = database.get_all_sheet_names()
-        st.caption(f"Hojas en GSheets: {hojas}")
+# --- ÁREA DE LOGS FORENSES (LO QUE NECESITAMOS VER) ---
+st.subheader("🕵️ LOGS DE DEPURACIÓN (DATABASE.PY)")
+st.info("Revisa paso a paso por qué se eligió la hoja incorrecta.")
 
-    st.write("### Datos de Historial Cargados:")
-    
-    if df_hist.empty:
-        st.warning("⚠️ DataFrame vacío. Puede que la hoja Historial no tenga datos o haya sido rechazada por seguridad (columnas incorrectas).")
-    else:
-        st.write(f"Filas: {len(df_hist)} | Columnas: {list(df_hist.columns)}")
-        # Validar si estamos viendo la hoja correcta
-        if 'CoolDown_Alta' in df_hist.columns:
-            st.error("🚨 ERROR CRÍTICO: Se cargó la hoja de Portafolio en lugar del Historial.")
-        elif 'Resultado_Neto' in df_hist.columns:
-            st.success("✅ Hoja Correcta. Columna 'Resultado_Neto' encontrada.")
-            st.dataframe(df_hist.head())
-        else:
-            st.warning("⚠️ Se cargaron datos, pero no veo 'Resultado_Neto'. Revisa los nombres de columnas.")
-            st.dataframe(df_hist.head())
+if st.button("🔥 BORRAR CACHÉ Y RE-EJECUTAR LOGS"):
+    st.cache_data.clear()
+    st.rerun()
+
+# Mostramos los logs línea por línea
+log_text = "\n".join([str(l) for l in debug_logs])
+st.text_area("Log de Ejecución:", value=log_text, height=400)
+
+if not df_hist.empty:
+    st.write("### Dataframe Resultante:")
+    st.dataframe(df_hist.head())
+else:
+    st.error("El Dataframe final está vacío.")
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
