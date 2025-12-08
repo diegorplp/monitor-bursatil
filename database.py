@@ -28,7 +28,6 @@ def _calcular_costo_operacion(monto_bruto, broker):
 # --- CONEXIÓN ---
 def _get_worksheet(name=None):
     try:
-        # Intenta usar credenciales de la nube (dict) o archivo local según disponibilidad
         try:
             from config import USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
             if USE_CLOUD_AUTH:
@@ -36,7 +35,6 @@ def _get_worksheet(name=None):
             else:
                 gc = gspread.service_account(filename=CREDENTIALS_FILE)
         except ImportError:
-             # Fallback clásico local
              gc = gspread.service_account(filename=CREDENTIALS_FILE)
 
         sh = gc.open(SHEET_NAME)
@@ -51,46 +49,32 @@ def get_portafolio_df():
     try:
         ws = _get_worksheet()
         data = ws.get_all_records()
-        
-        # Protección contra hojas vacías
-        if not data: 
-            return pd.DataFrame()
+        if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
-        
-        # Normalización columnas (strip de espacios)
         df.columns = [c.strip() for c in df.columns]
         
-        # Validación mínima
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        if not all(c in df.columns for c in expected): 
-            return pd.DataFrame()
+        if not all(c in df.columns for c in expected): return pd.DataFrame()
 
-        # Fix Tickers
         def fix_ticker(t):
             t = str(t).strip().upper()
             if not t.endswith('.BA') and len(t) < 9 and len(t) > 0: return f"{t}.BA"
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        # Rellenar faltantes (Soporte retroactivo)
         if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
         if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
         if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
-        # Soporte para tus nuevas columnas del Bot
         if 'CoolDown_Alta' not in df.columns: df['CoolDown_Alta'] = 0
         if 'CoolDown_Baja' not in df.columns: df['CoolDown_Baja'] = 0
 
-        # Conversiones de tipos seguras
-        df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce').fillna(0)
-        df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce').fillna(0)
-        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0)
-        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0)
-
-        # Eliminar filas basura (sin ticker o sin cantidad)
+        df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce').fillna(0).astype(float)
+        df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce').fillna(0).astype(float)
+        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0).astype(float)
+        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0).astype(float)
         df = df[df['Ticker'] != '']
         df = df[df['Cantidad'] > 0]
-        
         df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
 
         return df
@@ -103,27 +87,14 @@ def get_historial_df():
         ws = _get_worksheet("Historial")
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
-        
         df = pd.DataFrame(data)
-        
-        # Columnas numéricas clave
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
-        
         for c in cols_num:
             if c in df.columns:
-                # 1. Convertimos a string primero
-                df[c] = df[c].astype(str)
-                # 2. Reemplazamos coma por punto (si tu sheet usa coma decimal)
-                # OJO: Si usas punto para miles y coma para decimal, esto lo arregla.
-                # Si usas punto para decimal, esto no afecta.
-                df[c] = df[c].str.replace(',', '.')
-                # 3. Forzamos numérico
+                df[c] = df[c].astype(str).str.replace(',', '.')
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-                
         return df
-    except Exception as e:
-        print(f"Error Historial: {e}")
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def get_tickers_en_cartera():
     df = get_portafolio_df()
@@ -134,9 +105,6 @@ def get_tickers_en_cartera():
 def add_transaction(data):
     try:
         ws = _get_worksheet()
-        # Preparamos la fila respetando el orden. 
-        # Nota: gspread append_row agrega al final. Si tus columnas nuevas están al medio, esto podría desfasarse si no coinciden.
-        # Asumimos que CoolDown están al final o no las escribimos desde la app web por ahora.
         row = [
             str(data['Ticker']), str(data['Fecha_Compra']),
             int(data['Cantidad']), float(data['Precio_Compra']),
@@ -153,33 +121,26 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
         ws = _get_worksheet()
         records = ws.get_all_records()
         idx_fila = -1
-        
         for i, row in enumerate(records):
-            # Normalización para búsqueda
             r_tick = str(row['Ticker']).strip().upper()
             if not r_tick.endswith('.BA') and len(r_tick) < 9: r_tick += '.BA'
-            
             r_fecha = str(row['Fecha_Compra']).split(" ")[0]
             t_fecha = str(fecha_compra_str).split(" ")[0]
-            
             if r_tick == ticker and r_fecha == t_fecha:
                 idx_fila = i + 2 
                 break
         
         if idx_fila == -1: return False, "Lote no encontrado."
-
-        # Asumimos columnas fijas 6 y 7 para Alertas. 
-        # Si agregaste columnas AL FINAL, esto sigue valiendo. 
-        # Si agregaste CoolDown ENTRE MEDIO, los índices cambian.
-        # Ajuste seguro: Buscar el índice de la columna por nombre si es posible, pero gspread básico usa índice numérico.
-        # Asumiré que CoolDown las pusiste al final (Col 8 y 9).
         ws.update_cell(idx_fila, 6, float(nueva_alta))
         ws.update_cell(idx_fila, 7, float(nueva_baja))
         return True, "Alertas guardadas."
     except Exception as e:
         return False, f"Error: {e}"
 
-def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str):
+def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
+    """
+    Registra la venta. Usa precio_compra_id para diferenciar lotes del mismo día.
+    """
     try:
         ws_port = _get_worksheet()
         try: ws_hist = _get_worksheet("Historial")
@@ -195,32 +156,40 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             r_fecha = str(row['Fecha_Compra']).split(" ")[0]
             t_fecha = str(fecha_compra_str).split(" ")[0]
             
+            # Coincidencia básica
             if r_tick == ticker and r_fecha == t_fecha:
+                # CORRECCIÓN DE BUG DE DUPLICADOS:
+                # Si nos pasan el precio ID, verificamos que coincida
+                if precio_compra_id is not None:
+                    p_row = float(str(row['Precio_Compra']).replace(',','.'))
+                    p_target = float(precio_compra_id)
+                    # Tolerancia de centavos por redondeo
+                    if abs(p_row - p_target) > 0.05:
+                        continue # No es el lote correcto, saltar
+                
                 fila_encontrada = row
                 idx_fila = i + 2 
                 break
         
-        if not fila_encontrada: return False, "Lote no encontrado."
+        if not fila_encontrada: return False, "Lote no encontrado (Check precio/fecha)."
 
         cant_tenencia = int(fila_encontrada['Cantidad'])
         cant_vender = int(cantidad_a_vender)
-        precio_compra = float(fila_encontrada['Precio_Compra'])
+        precio_compra = float(str(fila_encontrada['Precio_Compra']).replace(',','.'))
         precio_vta = float(precio_venta)
         broker = str(fila_encontrada.get('Broker', 'DEFAULT'))
         a_alta = float(fila_encontrada.get('Alerta_Alta', 0))
         a_baja = float(fila_encontrada.get('Alerta_Baja', 0))
         
-        if cant_vender > cant_tenencia: return False, "Cantidad insuficiente."
+        if cant_vender > cant_tenencia: return False, f"Insuficiente: tienes {cant_tenencia}, pides {cant_vender}."
 
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
-        
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
         
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
-        
         resultado = ingreso_neto_venta - costo_total_origen
 
         row_h = [
@@ -276,7 +245,6 @@ def remove_favorito(ticker):
         if cell:
             ws.delete_rows(cell.row)
             return True, "Eliminado."
-        # Intento fallback
         cell = ws.find(ticker.replace('.BA', ''))
         if cell:
             ws.delete_rows(cell.row)

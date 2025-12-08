@@ -4,12 +4,9 @@ from datetime import datetime
 import database
 import market_logic
 import config
-import manager # Importar manager
 
 st.set_page_config(page_title="Portafolio", layout="wide")
 st.title("💰 Tu Portafolio y Señales de Venta")
-
-manager.mostrar_boton_actualizar()
 
 # --- ESTILOS ---
 def get_styled_portafolio(df):
@@ -49,7 +46,6 @@ def render_alert_input(label, current_val, base_price, key_prefix):
     c1, c2 = st.columns([1, 2])
     with c1:
         modo = st.radio("Tipo", ["$", "%"], key=f"{key_prefix}_mode", horizontal=True, label_visibility="collapsed")
-    
     val_retorno = 0.0
     with c2:
         if modo == "$":
@@ -86,7 +82,6 @@ try:
             'Alerta_Alta': 'A.Alta', 'Alerta_Baja': 'A.Baja'
         })
         
-        # Agregamos Broker a la vista si existe
         cols_finales = ['Ticker', 'Broker', 'Fecha', 'Cantidad', 'P.Compra', 'P.Actual', 'Inv.Total', 'GB', '%GB', 'GN', '%GN', 'A.Alta', 'A.Baja', 'Senal']
         cols_validas = [c for c in cols_finales if c in df_display.columns]
         
@@ -113,13 +108,12 @@ try:
                 
                 lote_idx = st.selectbox("2. Seleccionar Lote", options=opciones_lotes.keys(), format_func=lambda x: opciones_lotes[x], key="lote_vta")
                 
-                # Datos del lote
                 lote_data = lotes.loc[lote_idx]
                 cantidad_max = int(lote_data['Cantidad'])
                 fecha_compra_orig = pd.to_datetime(lote_data['Fecha_Compra']).strftime('%Y-%m-%d')
                 broker_origen = lote_data.get('Broker', 'DEFAULT')
-                
-                # Info de Comisión
+                precio_compra_orig = float(lote_data['Precio_Compra']) # ID para el backend
+
                 tasa_info = config.COMISIONES.get(broker_origen, "Estándar")
                 if broker_origen == 'VETA': tasa_info = "0.15% + IVA + Der (Min $50)"
                 elif broker_origen == 'COCOS': tasa_info = "0% (Solo derechos)"
@@ -130,8 +124,6 @@ try:
 
                 with st.form("form_venta"):
                     st.markdown("### 3. Detalles de la Operación")
-                    
-                    # VISUALIZACIÓN DE BROKER BLOQUEADO
                     st.info(f"🔒 **Custodia:** {broker_origen} — **Comisión:** {tasa_info}")
                     
                     c1, c2, c3 = st.columns(3)
@@ -147,7 +139,8 @@ try:
                             fecha_compra_str=fecha_compra_orig,
                             cantidad_a_vender=q_venta,
                             precio_venta=p_venta,
-                            fecha_venta_str=f_venta.strftime('%Y-%m-%d')
+                            fecha_venta_str=f_venta.strftime('%Y-%m-%d'),
+                            precio_compra_id=precio_compra_orig # NUEVO PARAMETRO
                         )
                         if res:
                             st.success(msg)
