@@ -53,8 +53,15 @@ def get_portafolio_df():
         df = pd.DataFrame(data)
         df.columns = [c.strip() for c in df.columns]
         
+# Validación con Debug
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        if not all(c in df.columns for c in expected): return pd.DataFrame()
+        columnas_leidas = df.columns.tolist()
+        
+        missing = [c for c in expected if c not in columnas_leidas]
+        
+        if missing:
+            # Esto hará que la app muestre el error rojo en lugar de "vacío"
+            raise ValueError(f"Faltan columnas en Sheets: {missing}. Leídas: {columnas_leidas}")
 
         def fix_ticker(t):
             t = str(t).strip().upper()
