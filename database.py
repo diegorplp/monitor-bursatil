@@ -2,7 +2,7 @@ import gspread
 import pandas as pd
 import time
 import streamlit as st
-from gspread.exceptions import APIError, WorksheetNotFound
+from gspread.exceptions import APIError
 from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, TICKERS_CONFIG
@@ -15,6 +15,7 @@ except ImportError:
     VETA_MINIMO = 50
     USE_CLOUD_AUTH = False
     GOOGLE_CREDENTIALS_DICT = {}
+    TICKERS_CONFIG = {}
 
 # --- UTILIDADES ---
 def _calcular_costo_operacion(monto_bruto, broker):
@@ -25,6 +26,7 @@ def _calcular_costo_operacion(monto_bruto, broker):
         gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return gastos
     else:
+        # COCOS usa 0.6% desde config si está configurado así, o default
         tasa = COMISIONES.get(broker, 0.006)
         return monto_bruto * tasa
 
@@ -63,13 +65,8 @@ def _get_worksheet(name=None):
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
             
         sh = gc.open(SHEET_NAME)
-        
-        if name:
-            print(f"DEBUG: Abriendo pestaña específica '{name}'")
-            return sh.worksheet(name)
-        else:
-            print("DEBUG: Abriendo pestaña por defecto (Índice 0)")
-            return sh.get_worksheet(0)
+        if name: return sh.worksheet(name)
+        return sh.get_worksheet(0)
     except Exception as e:
         print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
@@ -77,7 +74,7 @@ def _get_worksheet(name=None):
 # --- LIMPIEZA CACHÉ ---
 def clear_db_cache():
     get_portafolio_df.clear()
-    # get_historial_df.clear() # Comentado porque le quitamos el decorador temporalmente
+    get_historial_df.clear()
     get_favoritos.clear()
 
 # --- LECTURA PORTAFOLIO ---
@@ -85,7 +82,7 @@ def clear_db_cache():
 @retry_api_call
 def get_portafolio_df():
     try:
-        ws = _get_worksheet() # Sin nombre -> Pestaña 0 (Portafolio)
+        ws = _get_worksheet()
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
 
@@ -101,11 +98,11 @@ def get_portafolio_df():
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        # Rellenar faltantes
-        for c in ['Broker', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']:
-            if c not in df.columns: df[c] = 0
+        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 
+                     'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
+        for c, default in cols_defs.items():
+            if c not in df.columns: df[c] = default
 
-        # Limpieza Numérica
         for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
             df[c] = df[c].apply(_clean_number_str)
         
@@ -118,40 +115,41 @@ def get_portafolio_df():
         print(f"ERROR LEYENDO DB: {e}")
         return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (FIX: SIN CACHE PARA TEST) ---
-# @st.cache_data(ttl=60, show_spinner=False) <--- COMENTADO PARA FORZAR LECTURA
+@st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
-        # LLAMADA EXPLÍCITA AL NOMBRE "Historial"
-        ws = _get_worksheet("Historial") 
+        ws = _get_worksheet("Historial")
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Validación de seguridad: Si tiene CoolDown, NO es el historial
-        if 'CoolDown_Alta' in df.columns:
-            print("CRÍTICO: Se leyó la hoja equivocada en get_historial_df")
-            return pd.DataFrame()
+        if 'Resultado_Neto' not in df.columns and 'Ticker' in df.columns:
+             df.columns = [c.replace(' ', '_') for c in df.columns]
 
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
         
         return df
-    except WorksheetNotFound:
-        print("ERROR: No se encontró la pestaña 'Historial'")
-        return pd.DataFrame()
     except Exception as e:
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
 def get_tickers_en_cartera():
-    df = get_portafolio_df()
-    if df.empty: return []
-    return df['Ticker'].unique().tolist()
+    """Obtiene lista única de tickers de forma segura."""
+    try:
+        df = get_portafolio_df()
+        
+        # BLINDAJE: Si df no es DataFrame o está vacío, retornar lista vacía
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return []
+            
+        return df['Ticker'].unique().tolist()
+    except:
+        return []
 
 # --- ESCRITURA ---
 @retry_api_call
@@ -194,8 +192,8 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
-        ws_port = _get_worksheet() 
-        try: ws_hist = _get_worksheet("Historial") 
+        ws_port = _get_worksheet()
+        try: ws_hist = _get_worksheet("Historial")
         except: return False, "Falta pestaña 'Historial'."
 
         records = ws_port.get_all_records()
@@ -230,11 +228,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cant_vender > cant_tenencia: return False, "Cantidad insuficiente."
 
-# --- CÁLCULO FINANCIERO REAL (CON SOPORTE BONOS) ---
-        
+        # --- LÓGICA DE BONOS (RECUPERADA) ---
         es_bono = ticker in TICKERS_CONFIG.get('Bonos', [])
         divisor = 100 if es_bono else 1
-
+        
         monto_compra_bruto = (precio_compra * cant_vender) / divisor
         monto_venta_bruto = (precio_vta * cant_vender) / divisor
         
@@ -243,7 +240,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
-        
         resultado = ingreso_neto_venta - costo_total_origen
 
         row_h = [
