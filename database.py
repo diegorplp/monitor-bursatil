@@ -43,48 +43,50 @@ def _get_worksheet(name=None):
         print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
-# --- LECTURA PORTAFOLIO ---
+# En database.py, reemplaza SOLO la función get_portafolio_df con esto:
+
 def get_portafolio_df():
-    try:
-        ws = _get_worksheet()
-        data = ws.get_all_records()
-        if not data: return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        df.columns = [c.strip() for c in df.columns]
-        
-# Validación con Debug
-        expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
-        columnas_leidas = df.columns.tolist()
-        
-        missing = [c for c in expected if c not in columnas_leidas]
-        
-        if missing:
-            # Esto hará que la app muestre el error rojo en lugar de "vacío"
-            raise ValueError(f"Faltan columnas en Sheets: {missing}. Leídas: {columnas_leidas}")
+    # --- MODO DEBUG SIN TRY/EXCEPT ---
+    # Si esto falla, queremos ver el error en la pantalla de Streamlit.
+    
+    ws = _get_worksheet() # Esto validará la conexión
+    
+    # Intenta leer todo. Si falla aquí, sabremos por qué.
+    data = ws.get_all_records()
+    
+    if not data:
+        # Si llega aquí, es que leyó la hoja pero está vacía (0 filas de datos)
+        raise ValueError(f"La hoja '{SHEET_NAME}' se leyó correctamente pero gspread dice que está vacía.")
 
-        def fix_ticker(t):
-            t = str(t).strip().upper()
-            if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
-            return t
-        df['Ticker'] = df['Ticker'].apply(fix_ticker)
+    df = pd.DataFrame(data)
+    
+    # Normalización de Columnas
+    df.columns = [c.strip() for c in df.columns]
+    
+    # Validación EXPLÍCITA
+    expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
+    missing = [c for c in expected if c not in df.columns]
+    
+    if missing:
+        # Si faltan columnas, explotamos con el detalle
+        raise ValueError(f"Faltan columnas obligatorias: {missing}. Columnas encontradas: {df.columns.tolist()}")
 
-        if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
-        if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
-        if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
+    # Fix Tickers
+    def fix_ticker(t):
+        t = str(t).strip().upper()
+        if not t.endswith('.BA') and len(t) < 9: return f"{t}.BA"
+        return t
+    df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce')
-        df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce')
-        df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0)
-        df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0)
-        
-        df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
-        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
+    # Tipos
+    df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce')
+    df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce')
+    
+    # Limpieza
+    df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
+    df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
 
-        return df
-    except Exception as e:
-        print(f"ERROR LEYENDO DB: {e}")
-        return pd.DataFrame()
+    return df
 
 def get_historial_df():
     try:
