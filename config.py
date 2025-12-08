@@ -1,57 +1,67 @@
 import streamlit as st
 import os
+import sys
 
-# --- LÓGICA DE DETECCIÓN Y SEGURIDAD MÁXIMA ---
+# ----------------------------------------------------
+# --- LÓGICA DE DETECCIÓN DE ENTORNO Y AUTENTICACIÓN SEGURA ---
+# ----------------------------------------------------
 
-# Streamlit Cloud siempre setea esta variable de entorno
+# 1. Chequeo inicial de detección de entorno
 IS_STREAMLIT_CLOUD = "STREAMLIT_SERVER_VERSION" in os.environ
+print(f"DEBUG_CFG: 1. IS_STREAMLIT_CLOUD detectado como: {IS_STREAMLIT_CLOUD}")
 
 if IS_STREAMLIT_CLOUD:
-    # MODO NUBE (SEGURO): La aplicación SOLO lee de st.secrets.
+    print("DEBUG_CFG: 2. Entrando en bloque IF (Modo CLOUD)")
+    
+    # MODO NUBE (SEGURO):
     try:
-        # 1. Credenciales de IOL
+        # 3. Intentando cargar secrets
+        print("DEBUG_CFG: 3. Intentando leer secrets...")
+        
+        # Credenciales de IOL
         IOL_USER = st.secrets["IOL_USER"]
         IOL_PASSWORD = st.secrets["IOL_PASSWORD"]
         SHEET_NAME = st.secrets["SHEET_NAME"]
-        
-        # 2. Credenciales GCP (FIX CRÍTICO para gspread)
-        # Importamos las credenciales como un diccionario
+        print("DEBUG_CFG: 3a. IOL_USER y SHEET_NAME cargados.")
+
+        # Credenciales GCP
         GOOGLE_CREDENTIALS_DICT = dict(st.secrets["gcp_service_account"])
         if "private_key" in GOOGLE_CREDENTIALS_DICT:
-            # Reemplazamos el token de salto de línea '\n' que Streamlit a veces introduce
             pk = GOOGLE_CREDENTIALS_DICT["private_key"]
             GOOGLE_CREDENTIALS_DICT["private_key"] = pk.replace("\\n", "\n")
+        print(f"DEBUG_CFG: 3b. GCP dict cargado. Keys en dict: {len(GOOGLE_CREDENTIALS_DICT.keys())}")
         
-        # Variables de control para database.py
         USE_CLOUD_AUTH = True
-        CREDENTIALS_FILE = None # No se usa en la nube, pero debe estar definido.
+        CREDENTIALS_FILE = None 
+        
+        print(f"DEBUG_CFG: 4. CLOUD exitoso. USE_CLOUD_AUTH={USE_CLOUD_AUTH}. CREDENTIALS_FILE={CREDENTIALS_FILE}")
 
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG_CFG: 5. ERROR FATAL al cargar secrets: {e}", file=sys.stderr)
+        
         # Si falla la lectura de secrets, la app debe fallar.
-        raise Exception("ERROR FATAL DE SEGURIDAD: Faltan claves en Streamlit Secrets. No se puede iniciar la conexión con IOL/Google.")
+        raise Exception(f"ERROR FATAL DE SEGURIDAD EN CLOUD: Faltan claves en Streamlit Secrets. Detalle: {e}")
 
 else:
+    print("DEBUG_CFG: 2. Entrando en bloque ELSE (Modo LOCAL)")
+    
     # MODO LOCAL (TU PC): 
-    # Definimos todas las variables necesarias.
-    
-    # Variables de control para database.py
     USE_CLOUD_AUTH = False
-    GOOGLE_CREDENTIALS_DICT = None # No se usa en modo local.
-
-    # --- DATOS LOCALES PARA PRUEBAS (ATENCIÓN: NO DEBEN SER CLAVES REALES EN GITHUB) ---
-    # Para que funcione localmente, DEBES COMPLETAR ESTOS VALORES EN TU COPIA LOCAL
-    # (La versión que tienes en tu disco duro, NO la que subiste a GitHub).
-    IOL_USER = "" # <<-- Usuario real para el modo LOCAL
-    IOL_PASSWORD = "" # <<-- Password real para el modo LOCAL
-    SHEET_NAME = "para_streamlit" # <<-- Nombre de tu hoja (puede ser constante)
+    GOOGLE_CREDENTIALS_DICT = None
     
-    # RUTA AL ARCHIVO JSON en tu PC:
-    CREDENTIALS_FILE = "carbon-broker-479906-a2-157f549dc6b7.json" # <<-- RUTA DE TU ARCHIVO LOCAL
+    # --- DATOS LOCALES PARA PRUEBAS (DEBES EDITAR ESTOS VALORES) ---
+    IOL_USER = ""
+    IOL_PASSWORD = ""
+    SHEET_NAME = "para_streamlit" 
+    CREDENTIALS_FILE = "ruta_correcta_a_tu_archivo.json" 
+    
+    print(f"DEBUG_CFG: 4. LOCAL exitoso. USE_CLOUD_AUTH={USE_CLOUD_AUTH}. CREDENTIALS_FILE={CREDENTIALS_FILE}")
 
-# --- CONFIGURACIÓN GENERAL (A PARTIR DE AQUÍ SON SOLO TASAS Y LISTAS) ---
+
+# --- CONFIGURACIÓN GENERAL (CONSTANTES) ---
 DIAS_HISTORIAL = 200
 
-# TASAS Y BONOS (Se mantienen igual)
+# TASAS Y BONOS
 IVA = 1.21
 DERECHOS_MERCADO = 0.0008
 VETA_MINIMO = 50

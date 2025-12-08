@@ -2,10 +2,17 @@ import gspread
 import pandas as pd
 from datetime import datetime
 import os 
+import sys # Añadido para debugging
 
+# Importación directa de config.py
 from config import SHEET_NAME, CREDENTIALS_FILE, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO
 
-# --- LÓGICA DE COMISIONES (Función auxiliar faltante) ---
+print(f"DEBUG_DB: 1. Valores de config cargados. USE_CLOUD_AUTH: {USE_CLOUD_AUTH}")
+print(f"DEBUG_DB: 2. CREDENTIALS_FILE: {CREDENTIALS_FILE}")
+print(f"DEBUG_DB: 3. GOOGLE_CREDENTIALS_DICT es None: {GOOGLE_CREDENTIALS_DICT is None}")
+
+
+# --- LÓGICA DE COMISIONES (Función auxiliar) ---
 def _calcular_costo_operacion(monto_bruto, broker_key):
     """Calcula el costo total de una operación (comisiones + derechos + IVA)."""
     comision_pct = COMISIONES.get(broker_key, COMISIONES['DEFAULT'])
@@ -24,32 +31,35 @@ def _calcular_costo_operacion(monto_bruto, broker_key):
         
     return costo_total
 
+# --- CONEXIÓN INTELIGENTE Y BLINDADA ---
 def _get_worksheet(name=None):
+    gc = None
     try:
-        # Lógica centralizada de conexión
-        gc = None
-        # ⚠️ CAMBIO CRÍTICO: Chequeamos la existencia de las credenciales de la nube (si existen, estamos en la nube)
+        print("DEBUG_DB_WS: 1. Intentando conectar a Google Sheets.")
+        
+        # ⚠️ CAMBIO CRÍTICO: Chequeamos la existencia del diccionario de credenciales
         if GOOGLE_CREDENTIALS_DICT is not None and GOOGLE_CREDENTIALS_DICT != {}:
-            # MODO NUBE: Usa el diccionario de secretos 
+            print("DEBUG_DB_WS: 2a. Usando Modo CLOUD (service_account_from_dict).")
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
+            print(f"DEBUG_DB_WS: 2b. Usando Modo LOCAL (service_account). Ruta: {CREDENTIALS_FILE}")
             # MODO LOCAL: Usa el archivo.
             if not os.path.exists(CREDENTIALS_FILE):
-                 # Si no existe, lanza el error y la app se detiene.
+                 # Si no existe, lanza el error. ESTE ES EL ERROR QUE ESTAMOS VIENDO
+                 print(f"DEBUG_DB_WS: 3. ERROR DE ARCHIVO LOCAL: Archivo no encontrado en la ruta: {CREDENTIALS_FILE}", file=sys.stderr)
                  raise FileNotFoundError(f"Archivo local no encontrado en la ruta: {CREDENTIALS_FILE}")
 
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
             
+        print(f"DEBUG_DB_WS: 4. Autenticación exitosa. Abriendo hoja: {SHEET_NAME}")
         sh = gc.open(SHEET_NAME)
         if name: return sh.worksheet(name)
         return sh.get_worksheet(0)
     except Exception as e:
-        # MEJORA: Mensaje más claro para problemas de permisos de Google Sheets.
-        print(f"ERROR CONEXIÓN SHEETS: {e}")
+        print(f"ERROR CONEXIÓN SHEETS: {e}", file=sys.stderr)
         if "spreadsheet not found" in str(e).lower() or "not accessible" in str(e).lower():
-             print("Pista: Verifique que la cuenta de servicio de Google tenga permisos de 'Lector' en la hoja.")
+             print("Pista: Verifique que la cuenta de servicio de Google tenga permisos de 'Lector' en la hoja.", file=sys.stderr)
         
-        # Relanzamos el error para que Streamlit lo muestre
         raise e
 
 # --- LECTURA ---
@@ -85,7 +95,7 @@ def get_historial_df():
         for c in cols_num:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
         return df
-    except Exception: # Retorna un df vacío en caso de error (ej: pestaña "Historial" no existe)
+    except Exception:
         return pd.DataFrame()
 
 def get_tickers_en_cartera():
