@@ -18,12 +18,8 @@ if 'precios_actuales' not in st.session_state or st.session_state.precios_actual
 try:
     df_port = database.get_portafolio_df()
     df_hist = database.get_historial_df()
-    
-    # RECUPERAR LOGS DEL DATAFRAME
-    debug_logs = getattr(df_hist, 'attrs', {}).get('debug_logs', ["No hay logs disponibles."])
-    
 except Exception as e:
-    st.error(f"Error BD: {e}")
+    st.error(f"Error fatal en carga: {e}")
     st.stop()
 
 # --- CÁLCULOS ---
@@ -55,23 +51,19 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- ÁREA DE LOGS FORENSES (LO QUE NECESITAMOS VER) ---
-st.subheader("🕵️ LOGS DE DEPURACIÓN (DATABASE.PY)")
-st.info("Revisa paso a paso por qué se eligió la hoja incorrecta.")
+# --- DEBUGGING ROBUSTO ---
+with st.expander("🕵️ Logs de Depuración"):
+    if st.button("🔥 RECARGAR TODO"):
+        st.cache_data.clear()
+        st.rerun()
 
-if st.button("🔥 BORRAR CACHÉ Y RE-EJECUTAR LOGS"):
-    st.cache_data.clear()
-    st.rerun()
-
-# Mostramos los logs línea por línea
-log_text = "\n".join([str(l) for l in debug_logs])
-st.text_area("Log de Ejecución:", value=log_text, height=400)
-
-if not df_hist.empty:
-    st.write("### Dataframe Resultante:")
-    st.dataframe(df_hist.head())
-else:
-    st.error("El Dataframe final está vacío.")
+    # Recuperamos logs de Session State (más seguro que attrs)
+    logs = st.session_state.get('db_logs', ["No hay logs registrados."])
+    st.text_area("Log Database:", value="\n".join(logs), height=300)
+    
+    if not df_hist.empty:
+        st.write("Vista previa Historial (Primeras 5 filas):")
+        st.dataframe(df_hist.head())
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
