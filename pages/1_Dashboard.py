@@ -28,6 +28,7 @@ except Exception as e:
 # --- CÁLCULOS: PORTAFOLIO (LATENTE) ---
 ganancia_latente = 0.0
 valor_total_cartera = 0.0
+inversion_total_activa = 0.0
 df_validos = pd.DataFrame()
 
 if not df_port.empty:
@@ -43,32 +44,30 @@ if not df_port.empty:
     if 'Valor_Salida_Neto' in df_validos.columns:
         valor_total_cartera = df_validos['Valor_Salida_Neto'].sum()
     
-    # Inversión activa
-    inversion_total_activa = 0
     if 'Inversion_Total' in df_validos.columns:
         inversion_total_activa = df_validos['Inversion_Total'].sum()
 
-# --- CÁLCULOS: HISTORIAL (REALIZADO) ---
+# --- CÁLCULOS: HISTORIAL (REALIZADO) - CORREGIDO ---
 ganancia_realizada = 0.0
 if not df_hist.empty:
-    # Búsqueda flexible de la columna de resultado
+    # CORRECCIÓN: Confiamos en que database.py ya devolvió números.
+    # Solo sumamos directamente.
+    
+    # Buscamos la columna correcta (normalizada o no)
     col_res = None
     if 'Resultado_Neto' in df_hist.columns:
         col_res = 'Resultado_Neto'
-    elif 'Resultado Neto' in df_hist.columns: # Por si acaso no se normalizó
+    elif 'Resultado Neto' in df_hist.columns:
         col_res = 'Resultado Neto'
         
     if col_res:
-        # Limpieza extra por si acaso vienen strings con comas
-        s_res = df_hist[col_res].astype(str).str.replace('$', '').str.replace('.', '').str.replace(',', '.')
-        s_res = pd.to_numeric(s_res, errors='coerce').fillna(0.0)
+        # Forzamos a numérico simple por si quedó algún residuo, pero SIN borrar puntos
+        s_res = pd.to_numeric(df_hist[col_res], errors='coerce').fillna(0.0)
         ganancia_realizada = s_res.sum()
 
 # --- RESULTADO TOTAL ---
 resultado_global = ganancia_latente + ganancia_realizada
 roi_global = 0.0
-# Evitar división por cero
-inversion_total_activa = locals().get('inversion_total_activa', 0)
 if inversion_total_activa > 0:
     roi_global = (resultado_global / inversion_total_activa)
 
@@ -77,7 +76,7 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("Valor de Cartera", f"$ {valor_total_cartera:,.0f}")
 col2.metric("Ganancia Latente", f"$ {ganancia_latente:,.0f}")
 col3.metric("Ganancia Realizada", f"$ {ganancia_realizada:,.0f}")
-col4.metric("Resultado Global", f"$ {resultado_global:,.0f}")
+col4.metric("Resultado Global", f"$ {resultado_global:,.0f}", f"{roi_global:.2%}")
 
 st.divider()
 
@@ -97,33 +96,22 @@ if not df_validos.empty:
         chart = alt.Chart(df_bar).mark_bar().encode(
             x=alt.X('Ticker', sort='-y'), 
             y='Ganancia_Neta_Monto', 
-            color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("#21c354"), alt.value("#ff4b4b")),
-            tooltip=["Ticker", alt.Tooltip("Ganancia_Neta_Monto", format="$,.0f")]
+            color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("#21c354"), alt.value("#ff4b4b"))
         )
         st.altair_chart(chart, use_container_width=True)
 
 # --- DIAGNÓSTICO (DEBUGGER) ---
-st.divider()
-with st.expander("🕵️ Diagnóstico de Historial (Debug)", expanded=True): # Abierto por defecto para ver el error
+with st.expander("🕵️ Diagnóstico de Historial", expanded=False):
     if df_hist.empty:
-        st.warning("El historial está vacío o no se pudo leer.")
+        st.info("Historial vacío.")
     else:
-        st.info(f"Se leyeron {len(df_hist)} filas.")
-        
-        # MOSTRAR COLUMNAS REALES
-        st.write("Columnas encontradas en Google Sheets:", df_hist.columns.tolist())
-        
-        if 'Resultado_Neto' in df_hist.columns:
-            st.success("✅ Columna 'Resultado_Neto' encontrada.")
-            st.write(f"Suma: {df_hist['Resultado_Neto'].sum()}")
-        else:
-            st.error("❌ NO se encuentra 'Resultado_Neto'. Revisa la lista de columnas arriba.")
+        st.write(f"Filas leídas: {len(df_hist)}")
+        if col_res:
+            st.write(f"Suma calculada: {ganancia_realizada}")
+            st.dataframe(df_hist[['Ticker', col_res]].head())
 
-# Tabla final simple
+# Tabla final
 if not df_hist.empty:
     st.subheader("📜 Últimas Ventas")
-    # Buscamos columnas que existan para no dar error
-    possible_cols = ['Ticker', 'Fecha_Venta', 'Precio_Venta', 'Resultado_Neto', 'Broker']
-    cols_ver = [c for c in possible_cols if c in df_hist.columns]
-    
+    cols_ver = [c for c in ['Ticker', 'Fecha_Venta', 'Precio_Venta', 'Resultado_Neto', 'Broker'] if c in df_hist.columns]
     st.dataframe(df_hist[cols_ver].tail(5), use_container_width=True, hide_index=True)
