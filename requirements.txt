@@ -1,0 +1,8 @@
+streamlit
+pandas
+pandas_ta
+yfinance
+requests
+gspread
+streamlit-autorefresh
+altair

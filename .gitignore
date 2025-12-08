@@ -1,0 +1,12 @@
+# Archivos de sistema y entorno
+venv/
+__pycache__/
+.DS_Store
+
+# Archivos con CLAVES (¡CRÍTICO!)
+config.py
+*.json
+secrets.toml
+
+# Logs
+*.log
