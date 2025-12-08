@@ -103,12 +103,27 @@ def get_historial_df():
         ws = _get_worksheet("Historial")
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
+        
         df = pd.DataFrame(data)
+        
+        # Columnas numéricas clave
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
+        
         for c in cols_num:
-            if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
+            if c in df.columns:
+                # 1. Convertimos a string primero
+                df[c] = df[c].astype(str)
+                # 2. Reemplazamos coma por punto (si tu sheet usa coma decimal)
+                # OJO: Si usas punto para miles y coma para decimal, esto lo arregla.
+                # Si usas punto para decimal, esto no afecta.
+                df[c] = df[c].str.replace(',', '.')
+                # 3. Forzamos numérico
+                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+                
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        print(f"Error Historial: {e}")
+        return pd.DataFrame()
 
 def get_tickers_en_cartera():
     df = get_portafolio_df()
