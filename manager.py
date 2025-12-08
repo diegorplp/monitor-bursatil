@@ -8,7 +8,6 @@ import config
 
 # --- INICIALIZACIÓN DE ESTADO ---
 def init_session_state():
-    """Inicializa todas las variables de sesión si no existen."""
     if 'oportunidades' not in st.session_state: st.session_state.oportunidades = pd.DataFrame()
     if 'precios_actuales' not in st.session_state: st.session_state.precios_actuales = pd.Series(dtype=float)
     if 'paneles_cargados' not in st.session_state: st.session_state.paneles_cargados = []
@@ -21,14 +20,9 @@ def init_session_state():
 
 # --- LÓGICA DE ACTUALIZACIÓN ---
 def update_data(lista_tickers, nombre_panel, silent=False):
-    """Descarga, calcula y fusiona datos nuevos."""
-    
-    # 1. BLINDAJE DE SEGURIDAD (FIX ERROR ATTRIBUTE)
-    # Aseguramos que la variable exista antes de usarla
-    if 'oportunidades' not in st.session_state:
-        st.session_state.oportunidades = pd.DataFrame()
-    if 'precios_actuales' not in st.session_state:
-        st.session_state.precios_actuales = pd.Series(dtype=float)
+    # BLINDAJE DE SEGURIDAD
+    if 'oportunidades' not in st.session_state: st.session_state.oportunidades = pd.DataFrame()
+    if 'precios_actuales' not in st.session_state: st.session_state.precios_actuales = pd.Series(dtype=float)
         
     if not lista_tickers: return
 
@@ -52,8 +46,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         # 4. Indicadores
         try:
             df_nuevo_screener = market_logic.calcular_indicadores(df_nuevo_raw)
-        except: 
-            return
+        except: return
 
         if df_nuevo_screener.empty: return
 
@@ -85,8 +78,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         if not silent: st.success(f"{nombre_panel} actualizado.")
 
 def actualizar_todo(silent=False):
-    """Actualiza Bonos, Cartera y Favoritos de una sola vez."""
-    # Asegurar inicialización antes de actualizar
+    """Actualiza Bonos, Cartera y Favoritos."""
     init_session_state()
     
     # 1. Bonos (MEP)
@@ -97,15 +89,23 @@ def actualizar_todo(silent=False):
     t_cart = database.get_tickers_en_cartera()
     if t_cart: update_data(t_cart, "Cartera", silent=silent)
     
-    # 3. Favoritos
-    t_fav = database.get_favoritos()
+    # 3. Favoritos (FIX DE LISTA)
+    raw_fav = database.get_favoritos()
+    
+    # Aseguramos que sea una lista
+    t_fav = []
+    if isinstance(raw_fav, list):
+        t_fav = raw_fav
+    elif isinstance(raw_fav, pd.DataFrame):
+        if not raw_fav.empty:
+            t_fav = raw_fav.iloc[:, 0].tolist() # Convertimos columna 1 a lista
+    elif isinstance(raw_fav, pd.Series):
+        t_fav = raw_fav.tolist()
+        
     if t_fav: update_data(t_fav, "Favoritos", silent=True)
 
 # --- WIDGET DE SIDEBAR ---
 def mostrar_boton_actualizar():
-    """Muestra el estado y botón en la barra lateral."""
-    
-    # BLINDAJE DE INICIO: Si entramos directo aquí, inicializar todo.
     if 'last_update' not in st.session_state:
         init_session_state()
 
