@@ -56,7 +56,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO ---
+# --- LECTURA PORTAFOLIO (Este sí usa caché porque cambia rápido) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -81,8 +81,8 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL ---
-@st.cache_data(ttl=60, show_spinner=False)
+# --- LECTURA HISTORIAL (SIN CACHÉ - VERDAD ABSOLUTA) ---
+# He quitado @st.cache_data para evitar que guarde errores silenciosos.
 @retry_api_call
 def get_historial_df():
     try:
@@ -143,10 +143,11 @@ def get_historial_df():
         return df
 
     except Exception as e:
+        # Imprimimos el error en consola de Streamlit para que no pase silencioso
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
-# --- FUNCIONES DUMMY (Compatibilidad Manager) ---
+# --- FUNCIONES DUMMY ---
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     return df['Ticker'].unique().tolist() if not df.empty else []
