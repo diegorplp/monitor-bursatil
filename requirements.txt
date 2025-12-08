@@ -6,3 +6,4 @@ requests
 gspread
 streamlit-autorefresh
 altair
+pytz

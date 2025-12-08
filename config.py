@@ -2,23 +2,26 @@ import streamlit as st
 import os
 
 # --- LÓGICA HÍBRIDA DE SECRETOS ---
-# Intentamos leer desde los Secrets de Streamlit (Nube)
 try:
-    # Si estamos en la nube, estas variables vendran de st.secrets
+    # 1. Intentamos leer desde la Nube
     IOL_USER = st.secrets["IOL_USER"]
     IOL_PASSWORD = st.secrets["IOL_PASSWORD"]
-    
-    # Para Google Sheets, reconstruimos el diccionario desde los secretos
-    # (En la nube no subimos el archivo .json, pegamos su contenido en la config)
     SHEET_NAME = st.secrets["SHEET_NAME"]
     
-    # Esta variable especial le avisa a database.py que use el diccionario y no el archivo
-    USE_CLOUD_AUTH = True 
+    # 2. Reconstruimos el diccionario de credenciales
     GOOGLE_CREDENTIALS_DICT = dict(st.secrets["gcp_service_account"])
+
+    # --- FIX CRÍTICO PARA NUBE ---
+    # Reemplazamos los caracteres '\\n' literales por saltos de línea reales '\n'
+    # Sin esto, gspread rechaza la llave privada en Linux/Cloud.
+    if "private_key" in GOOGLE_CREDENTIALS_DICT:
+        private_key = GOOGLE_CREDENTIALS_DICT["private_key"]
+        GOOGLE_CREDENTIALS_DICT["private_key"] = private_key.replace("\\n", "\n")
+    
+    USE_CLOUD_AUTH = True 
 
 except (FileNotFoundError, KeyError):
     # --- MODO LOCAL (TU PC) ---
-    # Si falla lo de arriba, usa tus datos locales de siempre.
     USE_CLOUD_AUTH = False
     GOOGLE_CREDENTIALS_DICT = None
     
@@ -28,9 +31,10 @@ except (FileNotFoundError, KeyError):
     SHEET_NAME = "para_streamlit"
     CREDENTIALS_FILE = "carbon-broker-479906-a2-157f549dc6b7.json"
 
-# --- CONFIGURACIÓN GENERAL (IGUAL PARA AMBOS) ---
+# --- CONFIGURACIÓN GENERAL ---
 DIAS_HISTORIAL = 200
 
+# COSTOS
 IVA = 1.21
 DERECHOS_MERCADO = 0.0008
 VETA_MINIMO = 50
