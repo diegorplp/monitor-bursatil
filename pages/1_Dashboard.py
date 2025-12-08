@@ -38,13 +38,21 @@ if not df_port.empty:
     if 'Valor_Salida_Neto' in df_validos.columns:
         valor_cartera = df_validos['Valor_Salida_Neto'].sum()
 
+# --- EN pages/1_Dashboard.py (Bloque Historial modificado) ---
+
 # 2. Historial
 col_usada = "Ninguna"
 cols_hist_leidas = list(df_hist.columns) if not df_hist.empty else []
 
 if not df_hist.empty and 'Resultado_Neto' in df_hist.columns:
-    ganancia_realizada = df_hist['Resultado_Neto'].sum()
-    col_usada = 'Resultado_Neto'
+    # ARREGLO QUIRÚRGICO: Asegurar conversión numérica antes de sumar
+    try:
+        series_resultado = pd.to_numeric(df_hist['Resultado_Neto'], errors='coerce').fillna(0.0)
+        ganancia_realizada = series_resultado.sum()
+        col_usada = 'Resultado_Neto'
+    except Exception as e:
+        st.error(f"Error calculando suma historial: {e}")
+        ganancia_realizada = 0.0
 elif not df_hist.empty:
     col_usada = "❌ ERROR: No se encontró 'Resultado_Neto'"
 

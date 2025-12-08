@@ -16,21 +16,52 @@ except ImportError:
     TICKERS_CONFIG = {}
 
 # --- UTILIDADES ---
+
 def _clean_number_str(val):
+    """
+    Parsea strings numéricos manejando ambigüedad de formatos (AR vs US).
+    Prioriza formato AR (coma decimal) si hay ambigüedad, dado el contexto.
+    """
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
+    
     s = str(val).strip()
+    # Manejo de negativos entre paréntesis (Ej: (500))
     is_negative = s.startswith('(') and s.endswith(')')
+    if is_negative:
+        s = s.replace('(', '').replace(')', '')
+        
+    # Eliminar símbolos de moneda y caracteres extraños, dejando puntos, comas y menos
     s = re.sub(r'[^\d,.-]', '', s)
     if not s: return 0.0
-    if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.')
-        else: s = s.replace(',', '')
-    elif ',' in s: s = s.replace(',', '.')
+
+    # Lógica de detección de formato
+    if ',' in s and '.' in s:
+        # Caso mixto: 1.000,50 (AR) vs 1,000.50 (US)
+        # Asumimos que el último separador es el decimal
+        if s.rfind(',') > s.rfind('.'): 
+            s = s.replace('.', '').replace(',', '.') # Formato AR -> US
+        else:
+            s = s.replace(',', '') # Formato US -> Limpio
+    elif ',' in s:
+        # Solo comas: 10,50 (AR) o 1,000 (US)
+        if s.count(',') > 1: # Ej: 1,000,000 -> Es separador de miles US
+            s = s.replace(',', '')
+        else: # Ej: 10,50 -> Es decimal AR
+            s = s.replace(',', '.')
+    elif '.' in s:
+        # Solo puntos: 1.000 (AR) o 10.5 (US)
+        if s.count('.') > 1: # Ej: 1.000.000 -> Es separador de miles AR
+            s = s.replace('.', '')
+        # Si hay un solo punto (1.500), Python lo tomará como 1.5. 
+        # NOTA: Sin contexto estricto, dejamos que Python decida, pero en GSpread 
+        # suele venir como "1000" sin puntos si es número puro.
+
     try:
         val_float = float(s)
         return -val_float if is_negative else val_float
     except: return 0.0
+
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
@@ -82,65 +113,78 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (LÓGICA ADN) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
         sh = _get_connection()
         all_worksheets = sh.worksheets()
-        
         target_ws = None
         
-        # --- BÚSQUEDA POR ADN (CONTENIDO) ---
+        # --- BÚSQUEDA POR ADN ---
         for ws in all_worksheets:
             try:
                 headers = ws.row_values(1)
                 headers_upper = [str(h).strip().upper() for h in headers]
                 
-                # 1. CRITERIO DE EXCLUSIÓN (Portafolio: tiene CoolDown o Alertas explícitas)
-                if any(c.upper() in headers_upper for c in ['COOLDOWN_ALTA', 'COOLDOWN_BAJA', 'ALERTA_ALTA', 'ALERTA_BAJA']):
+                # Excluir Portafolio
+                if any(c in headers_upper for c in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
                     continue
                 
-                # 2. CRITERIO DE INCLUSIÓN (Historial: tiene Resultado/Ganancia/P&L)
+                # Buscar Resultado/Ganancia
                 tiene_resultado = any("RESULT" in h or "GANANCIA" in h or "P&L" in h for h in headers_upper)
-                
                 if tiene_resultado:
                     target_ws = ws
                     break
-            except:
-                continue
+            except: continue
         
-        # Si falló el ADN, intentamos por nombre Historial (flexible)
         if not target_ws:
+            # Fallback por nombre
             for ws in all_worksheets:
                 if "HISTORIAL" in ws.title.strip().upper():
                     target_ws = ws
                     break
         
-        if not target_ws:
-            print("ERROR CRÍTICO: No se encontró ninguna hoja que parezca un Historial.")
-            return pd.DataFrame()
+        if not target_ws: return pd.DataFrame()
 
-        # --- LECTURA DE LA HOJA ELEGIDA ---
         data = target_ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # Normalizar columnas
+        # 1. Normalizar encabezados (Espacios a guiones bajos)
         df.columns = [re.sub(r'\s+', '_', str(c).strip()) for c in df.columns]
         
-        # Renombrar columna resultado si es necesario
-        if 'Resultado_Neto' not in df.columns:
-            candidatos = [c for c in df.columns if 'RESULT' in c.upper() or 'NETO' in c.upper()]
-            if candidatos:
-                df.rename(columns={candidatos[0]: 'Resultado_Neto'}, inplace=True)
+        # 2. Renombrar columna Resultado de forma INTELIGENTE
+        # Buscamos primero 'Resultado_Neto' explícito, luego algo que tenga 'NETO', luego 'RESULTADO'
+        cols_upper = [c.upper() for c in df.columns]
+        mapa_cols = {c.upper(): c for c in df.columns}
         
-        # Limpieza numérica
+        col_resultado_real = None
+        if 'RESULTADO_NETO' in cols_upper:
+            col_resultado_real = mapa_cols['RESULTADO_NETO']
+        else:
+            # Buscar columna que contenga NETO (prioridad)
+            candidatos_neto = [c for c in df.columns if 'NETO' in c.upper() and ('RESULT' in c.upper() or 'GANANCIA' in c.upper())]
+            if candidatos_neto:
+                col_resultado_real = candidatos_neto[0]
+            else:
+                # Último recurso: cualquiera con RESULT o GANANCIA
+                candidatos_gen = [c for c in df.columns if 'RESULT' in c.upper() or 'GANANCIA' in c.upper()]
+                if candidatos_gen:
+                    col_resultado_real = candidatos_gen[0]
+
+        if col_resultado_real:
+            df.rename(columns={col_resultado_real: 'Resultado_Neto'}, inplace=True)
+        
+        # 3. Limpieza Numérica y FORZADO DE TIPOS
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
-            if c in df.columns: df[c] = df[c].apply(_clean_number_str)
+            if c in df.columns:
+                # Primero limpieza de strings
+                df[c] = df[c].apply(_clean_number_str)
+                # Segundo: Coerción estricta a numérico (evita que queden strings "ocultos")
+                df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
             
         return df
 
