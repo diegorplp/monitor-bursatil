@@ -5,7 +5,7 @@ import streamlit as st
 from gspread.exceptions import APIError, WorksheetNotFound
 from datetime import datetime
 try:
-    from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
+    from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT, TICKERS_CONFIG
 except ImportError:
     SHEET_NAME = ""
     CREDENTIALS_FILE = ""
@@ -230,14 +230,23 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cant_vender > cant_tenencia: return False, "Cantidad insuficiente."
 
-        monto_compra_bruto = precio_compra * cant_vender
-        monto_venta_bruto = precio_vta * cant_vender
+# --- CÁLCULO FINANCIERO REAL (CON SOPORTE BONOS) ---
+        
+        # Detectar si es bono para dividir por 100
+        # Importante: Asegúrate de importar TICKERS_CONFIG desde config al principio del archivo
+        from config import TICKERS_CONFIG 
+        es_bono = ticker in TICKERS_CONFIG.get('Bonos', [])
+        divisor = 100 if es_bono else 1
+
+        monto_compra_bruto = (precio_compra * cant_vender) / divisor
+        monto_venta_bruto = (precio_vta * cant_vender) / divisor
         
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
         
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
+        
         resultado = ingreso_neto_venta - costo_total_origen
 
         row_h = [

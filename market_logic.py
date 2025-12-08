@@ -109,7 +109,7 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
     df_precios = series_precios_actuales.to_frame(name='Precio_Actual')
     df = df.merge(df_precios, left_on='Ticker', right_index=True, how='left')
 
-    def calc_fila(row):
+def calc_fila(row):
         # Si no hay precio actual, devolvemos 0s
         if pd.isna(row['Precio_Actual']): return pd.Series([0,0,0,0,0,0,0])
         
@@ -117,12 +117,19 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
         p_actual = row['Precio_Actual']
         cant = row['Cantidad']
         broker = row.get('Broker', 'DEFAULT')
+        ticker = row['Ticker']
 
+        # --- LÓGICA DE BONOS (DIVIDIR POR 100) ---
+        # Verificamos si el ticker está en la lista de Bonos de la configuración
+        es_bono = ticker in config.TICKERS_CONFIG.get('Bonos', [])
+        divisor = 100 if es_bono else 1
+        
         # 1. Valor Bruto Actual (Mercado)
-        valor_bruto_actual = p_actual * cant
+        valor_bruto_actual = (p_actual * cant) / divisor
         
         # 2. Inversión Total (Costo Origen Estimado con comisiones de compra)
-        monto_compra_puro = p_compra * cant
+        monto_compra_puro = (p_compra * cant) / divisor
+        
         # Asumimos que pagaste comisiones al entrar. Usamos la regla del broker.
         comis_compra = calcular_comision_real(monto_compra_puro, broker)
         inversion_total = monto_compra_puro + comis_compra
@@ -141,7 +148,8 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
         return pd.Series([inversion_total, valor_bruto_actual, valor_neto_salida, 
                           gan_bruta_monto, gan_neta_monto, pct_bruta, pct_neta])
 
-    # Aplicamos cálculo
+
+  # Aplicamos cálculo
     cols_calc = ['Inversion_Total', 'Valor_Actual', 'Valor_Salida_Neto', 
                  'Ganancia_Bruta_Monto', 'Ganancia_Neta_Monto', 
                  '%_Ganancia_Bruta', '%_Ganancia_Neto']
