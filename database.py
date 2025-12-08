@@ -2,12 +2,11 @@ import gspread
 import pandas as pd
 import time
 import streamlit as st
-from gspread.exceptions import APIError
+from gspread.exceptions import APIError, WorksheetNotFound # Importamos la excepción específica
 from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
 except ImportError:
-    # Valores por defecto para evitar crash si config falla
     SHEET_NAME = ""
     CREDENTIALS_FILE = ""
     COMISIONES = {}
@@ -17,22 +16,16 @@ except ImportError:
     USE_CLOUD_AUTH = False
     GOOGLE_CREDENTIALS_DICT = {}
 
-# --- LÓGICA DE COMISIONES (CORREGIDA) ---
+# --- UTILIDADES ---
 def _calcular_costo_operacion(monto_bruto, broker):
     broker = str(broker).upper().strip()
-    
     if broker == 'VETA':
-        # 0.15% + IVA + Derechos. Mínimo fijo.
         TASA = 0.0015
         comision_base = max(VETA_MINIMO, monto_bruto * TASA)
         gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return gastos
-    
-    # ELIMINADO EL BLOQUE DE COCOS ESPECÍFICO. 
-    # AHORA USA EL DICCIONARIO COMISIONES DE CONFIG.PY
     else:
-        # Default (IOL/BULL/COCOS): Tasa all-in del config (ej: 0.6%)
-        tasa = COMISIONES.get(broker, 0.006) 
+        tasa = COMISIONES.get(broker, 0.006)
         return monto_bruto * tasa
 
 def _clean_number_str(val):
@@ -40,8 +33,8 @@ def _clean_number_str(val):
     if isinstance(val, (int, float)): return float(val)
     s = str(val).strip().replace('$', '').replace(' ', '')
     if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') # Latino
-        else: s = s.replace(',', '') # USA
+        if s.rfind('.') < s.rfind(','): s = s.replace('.', '').replace(',', '.') 
+        else: s = s.replace(',', '') 
     elif ',' in s: s = s.replace(',', '.')
     try: return float(s)
     except: return 0.0
@@ -70,11 +63,21 @@ def _get_worksheet(name=None):
             gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
         else:
             gc = gspread.service_account(filename=CREDENTIALS_FILE)
+            
         sh = gc.open(SHEET_NAME)
-        if name: return sh.worksheet(name)
+        
+        if name: 
+            # Intentamos buscar la pestaña por nombre específico
+            return sh.worksheet(name)
+        
+        # Si no hay nombre, devolvemos la primera (Portafolio)
         return sh.get_worksheet(0)
+        
+    except WorksheetNotFound:
+        print(f"❌ ERROR CRÍTICO: No se encontró la pestaña '{name}' en el Google Sheet.")
+        raise # Re-lanzamos para que la función que llamó se entere
     except Exception as e:
-        print(f"ERROR CONEXIÓN SHEETS: {e}")
+        print(f"❌ ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
 # --- LIMPIEZA CACHÉ ---
@@ -83,19 +86,20 @@ def clear_db_cache():
     get_historial_df.clear()
     get_favoritos.clear()
 
-# --- LECTURA ---
+# --- LECTURA PORTAFOLIO ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
     try:
-        ws = _get_worksheet()
+        # Llamada SIN nombre -> Hoja 0 (Transacciones)
+        ws = _get_worksheet() 
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
-        # Normalizamos encabezados (quita espacios)
         df.columns = [str(c).strip() for c in df.columns]
         
+        # Validación
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
         if not all(c in df.columns for c in expected): return pd.DataFrame()
 
@@ -105,10 +109,13 @@ def get_portafolio_df():
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
+        # Rellenar faltantes
+        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0, 
+                     'CoolDown_Alta': 0, 'CoolDown_Baja': 0}
         for c, default in cols_defs.items():
             if c not in df.columns: df[c] = default
 
+        # Limpieza Numérica
         for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
             df[c] = df[c].apply(_clean_number_str)
         
@@ -118,29 +125,45 @@ def get_portafolio_df():
 
         return df
     except Exception as e:
-        print(f"ERROR LEYENDO DB: {e}")
+        print(f"ERROR LEYENDO PORTAFOLIO: {e}")
         return pd.DataFrame()
 
+# --- LECTURA HISTORIAL (CORREGIDA) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
+        # AQUÍ ESTÁ EL CAMBIO: Forzamos el nombre "Historial"
+        print("🔍 Intentando leer pestaña 'Historial'...")
         ws = _get_worksheet("Historial")
+        
         data = ws.get_all_records()
-        if not data: return pd.DataFrame()
+        if not data: 
+            print("⚠️ La pestaña Historial está vacía.")
+            return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        # Normalizamos encabezados agresivamente (Reemplaza espacios por guion bajo)
-        # Esto ayuda si en el Excel pusiste "Resultado Neto" en vez de "Resultado_Neto"
-        df.columns = [str(c).strip().replace(' ', '_') for c in df.columns]
+        df.columns = [str(c).strip() for c in df.columns]
         
+        # Verificación de seguridad: ¿Es realmente el historial?
+        if 'Resultado_Neto' not in df.columns and 'Ticker' in df.columns:
+             print(f"⚠️ ALERTA: La hoja leída no parece ser el Historial. Columnas: {df.columns.tolist()}")
+             # Intentamos normalizar nombres por si acaso
+             df.columns = [c.replace(' ', '_') for c in df.columns]
+
+        # Limpieza numérica
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
         
+        print(f"✅ Historial leído: {len(df)} filas.")
         return df
+        
+    except WorksheetNotFound:
+        print("❌ FATAL: No existe la pestaña 'Historial'.")
+        return pd.DataFrame()
     except Exception as e:
-        print(f"Error Historial: {e}")
+        print(f"❌ Error General Historial: {e}")
         return pd.DataFrame()
 
 def get_tickers_en_cartera():
@@ -152,7 +175,7 @@ def get_tickers_en_cartera():
 @retry_api_call
 def add_transaction(data):
     try:
-        ws = _get_worksheet()
+        ws = _get_worksheet() # Hoja 0
         row = [
             str(data['Ticker']), str(data['Fecha_Compra']),
             int(data['Cantidad']), float(data['Precio_Compra']),
@@ -189,8 +212,8 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, nueva_alta, nueva_baja):
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
-        ws_port = _get_worksheet()
-        try: ws_hist = _get_worksheet("Historial")
+        ws_port = _get_worksheet() # Hoja 0
+        try: ws_hist = _get_worksheet("Historial") # Hoja Historial
         except: return False, "Falta pestaña 'Historial'."
 
         records = ws_port.get_all_records()
@@ -227,11 +250,8 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         monto_compra_bruto = precio_compra * cant_vender
         monto_venta_bruto = precio_vta * cant_vender
-        
-        # COMISIONES (Ahora Cocos usará el diccionario general)
         costo_entrada = _calcular_costo_operacion(monto_compra_bruto, broker)
         costo_salida = _calcular_costo_operacion(monto_venta_bruto, broker)
-        
         costo_total_origen = monto_compra_bruto + costo_entrada
         ingreso_neto_venta = monto_venta_bruto - costo_salida
         resultado = ingreso_neto_venta - costo_total_origen
