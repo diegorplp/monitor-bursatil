@@ -36,23 +36,25 @@ def _get_worksheet(name=None):
         print(f"ERROR CONEXIÓN SHEETS: {e}")
         raise e
 
-# --- LECTURA PORTAFOLIO (BLINDAJE DE TIPOS) ---
+# --- LECTURA PORTAFOLIO (RECONOCE COOL DOWN) ---
 def get_portafolio_df():
     try:
         ws = _get_worksheet()
-        # CRITICO: Obtenemos los valores. gspread get_all_records() empieza DESPUÉS del header
+        # Leemos los records
         data = ws.get_all_records()
 
         # Si no devuelve registros, la lista está vacía
         if not data: 
-            # Imprimimos un mensaje de éxito para que no confunda al usuario
             print("INFO: La hoja de Transacciones está vacía (Solo hay encabezados).")
             return pd.DataFrame() 
         
-        # Filtramos filas donde el Ticker esté vacío (para evitar errores en la lectura de gspread)
+        # Filtramos por Ticker (el ancla de la fila) y creamos DF
         df = pd.DataFrame([r for r in data if r.get('Ticker', '').strip()])
+
+        # Normalización columnas
         df.columns = [c.strip() for c in df.columns]
         
+        # Validación básica
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
         if not all(c in df.columns for c in expected): return pd.DataFrame()
 
@@ -62,28 +64,36 @@ def get_portafolio_df():
             return t
         df['Ticker'] = df['Ticker'].apply(fix_ticker)
 
-        # Rellenar faltantes
+        # Rellenar y Normalizar Faltantes/Nuevas
         if 'Broker' not in df.columns: df['Broker'] = 'DEFAULT'
         if 'Alerta_Alta' not in df.columns: df['Alerta_Alta'] = 0.0
         if 'Alerta_Baja' not in df.columns: df['Alerta_Baja'] = 0.0
+        
+        # --- RECONOCIMIENTO DE COLUMNAS DE COOLDOWN ---
+        if 'CoolDown_Alta' not in df.columns: df['CoolDown_Alta'] = 0 
+        if 'CoolDown_Baja' not in df.columns: df['CoolDown_Baja'] = 0
 
-        # --- BLINDAJE CRÍTICO DE TIPOS ---
-        # Si Streamlit está fallando en comparar str/int, forzamos float aquí.
+        # Conversiones
         df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce').astype(float)
         df['Precio_Compra'] = pd.to_numeric(df['Precio_Compra'], errors='coerce').astype(float)
         df['Alerta_Alta'] = pd.to_numeric(df['Alerta_Alta'], errors='coerce').fillna(0.0).astype(float)
         df['Alerta_Baja'] = pd.to_numeric(df['Alerta_Baja'], errors='coerce').fillna(0.0).astype(float)
         
+        # Conversión de CoolDown a int o float
+        df['CoolDown_Alta'] = pd.to_numeric(df['CoolDown_Alta'], errors='coerce').fillna(0).astype(int)
+        df['CoolDown_Baja'] = pd.to_numeric(df['CoolDown_Baja'], errors='coerce').fillna(0).astype(int)
+
         df.dropna(subset=['Ticker', 'Cantidad', 'Precio_Compra'], inplace=True)
         df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
 
         return df
 
     except Exception as e:
-        print(f"ERROR LEYENDO DB: {e}")
+        # DEBUG MODE MÁS CLARO
+        print(f"ERROR CRÍTICO LEYENDO DB: {e}")
         return pd.DataFrame()
 
-
+        
 def get_historial_df():
     try:
         ws = _get_worksheet("Historial")
