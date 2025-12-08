@@ -232,9 +232,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
 # --- CÁLCULO FINANCIERO REAL (CON SOPORTE BONOS) ---
         
-        # Detectar si es bono para dividir por 100
-        # Importante: Asegúrate de importar TICKERS_CONFIG desde config al principio del archivo
-        from config import TICKERS_CONFIG 
         es_bono = ticker in TICKERS_CONFIG.get('Bonos', [])
         divisor = 100 if es_bono else 1
 
