@@ -115,48 +115,64 @@ def get_portafolio_df():
 
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
+# --- EN database.py (Reemplazar get_historial_df) ---
+
+@st.cache_data(ttl=60, show_spinner=False)
+@retry_api_call
 def get_historial_df():
     try:
         sh = _get_connection()
-        all_worksheets = sh.worksheets()
         target_ws = None
         
-        # --- BÚSQUEDA POR ADN ---
-        for ws in all_worksheets:
-            try:
-                headers = ws.row_values(1)
-                headers_upper = [str(h).strip().upper() for h in headers]
-                
-                # Excluir Portafolio
-                if any(c in headers_upper for c in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
-                    continue
-                
-                # Buscar Resultado/Ganancia
-                tiene_resultado = any("RESULT" in h or "GANANCIA" in h or "P&L" in h for h in headers_upper)
-                if tiene_resultado:
-                    target_ws = ws
-                    break
-            except: continue
-        
-        if not target_ws:
-            # Fallback por nombre
-            for ws in all_worksheets:
+        # 1. ESTRATEGIA PRIORITARIA: Buscar por nombre exacto "Historial"
+        # Esto evita que el sistema "adivine" y termine leyendo Transacciones.
+        try:
+            target_ws = sh.worksheet("Historial")
+        except WorksheetNotFound:
+            # Si falla, buscamos alguna que contenga "HISTORIAL" en el nombre (ej: "Historial 2024")
+            for ws in sh.worksheets():
                 if "HISTORIAL" in ws.title.strip().upper():
                     target_ws = ws
                     break
         
-        if not target_ws: return pd.DataFrame()
+        # 2. ESTRATEGIA DE RESPALDO (ADN): Solo si NO se encontró por nombre
+        if not target_ws:
+            all_worksheets = sh.worksheets()
+            for ws in all_worksheets:
+                title_upper = ws.title.strip().upper()
+                
+                # CRÍTICO: Excluir explícitamente "Transacciones" o "Portafolio" para no confundirse
+                if "TRANSACCIONES" in title_upper or "PORTAFOLIO" in title_upper:
+                    continue
 
+                try:
+                    headers = ws.row_values(1)
+                    headers_upper = [str(h).strip().upper() for h in headers]
+                    
+                    # Exclusión de seguridad (columnas de Portafolio)
+                    if any(c in headers_upper for c in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
+                        continue
+                    
+                    # Búsqueda de Resultado
+                    if any("RESULT" in h or "GANANCIA" in h or "P&L" in h for h in headers_upper):
+                        target_ws = ws
+                        break
+                except: continue
+        
+        if not target_ws:
+            print("ERROR CRÍTICO: No se encontró la hoja Historial.")
+            return pd.DataFrame()
+
+        # --- PROCESAMIENTO DE DATOS ---
         data = target_ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # 1. Normalizar encabezados (Espacios a guiones bajos)
+        # Normalizar encabezados
         df.columns = [re.sub(r'\s+', '_', str(c).strip()) for c in df.columns]
         
-        # 2. Renombrar columna Resultado de forma INTELIGENTE
-        # Buscamos primero 'Resultado_Neto' explícito, luego algo que tenga 'NETO', luego 'RESULTADO'
+        # Renombrar columna Resultado (Priorizando 'Neto')
         cols_upper = [c.upper() for c in df.columns]
         mapa_cols = {c.upper(): c for c in df.columns}
         
@@ -164,12 +180,12 @@ def get_historial_df():
         if 'RESULTADO_NETO' in cols_upper:
             col_resultado_real = mapa_cols['RESULTADO_NETO']
         else:
-            # Buscar columna que contenga NETO (prioridad)
+            # Buscar columna que contenga NETO
             candidatos_neto = [c for c in df.columns if 'NETO' in c.upper() and ('RESULT' in c.upper() or 'GANANCIA' in c.upper())]
             if candidatos_neto:
                 col_resultado_real = candidatos_neto[0]
             else:
-                # Último recurso: cualquiera con RESULT o GANANCIA
+                # Fallback general
                 candidatos_gen = [c for c in df.columns if 'RESULT' in c.upper() or 'GANANCIA' in c.upper()]
                 if candidatos_gen:
                     col_resultado_real = candidatos_gen[0]
@@ -177,13 +193,11 @@ def get_historial_df():
         if col_resultado_real:
             df.rename(columns={col_resultado_real: 'Resultado_Neto'}, inplace=True)
         
-        # 3. Limpieza Numérica y FORZADO DE TIPOS
+        # Limpieza numérica y forzado de tipos (Esencial para la suma)
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
         for c in cols_num:
             if c in df.columns:
-                # Primero limpieza de strings
-                df[c] = df[c].apply(_clean_number_str)
-                # Segundo: Coerción estricta a numérico (evita que queden strings "ocultos")
+                df[c] = df[c].apply(_clean_number_str) # Tu nueva función robusta
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
             
         return df
