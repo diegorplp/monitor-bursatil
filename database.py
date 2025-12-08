@@ -243,3 +243,14 @@ def get_favoritos():
 def add_favorito(t): pass
 def remove_favorito(t): pass
 def actualizar_alertas_lote(*args): pass
+
+# --- EN database.py (Agregar al final) ---
+
+@retry_api_call
+def debug_get_sheet_names():
+    """Retorna la lista cruda de nombres de hojas en el Spreadsheet."""
+    try:
+        sh = _get_connection()
+        return [ws.title for ws in sh.worksheets()]
+    except Exception as e:
+        return [f"Error leyendo hojas: {str(e)}"]

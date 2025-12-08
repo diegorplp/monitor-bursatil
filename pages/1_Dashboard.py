@@ -68,23 +68,33 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 st.divider()
 
 # --- DIAGNÓSTICO ---
+# --- EN pages/1_Dashboard.py (Reemplazar bloque expander) ---
+
 with st.expander("🕵️ Diagnóstico de Historial (Si da $0 o error)", expanded=(ganancia_realizada == 0)):
-    if st.button("🔄 FORZAR RECARGA DE CACHÉ (Arreglar Bug de Hoja)"):
+    # 1. BOTÓN DE RECARGA
+    if st.button("🔄 FORZAR RECARGA DE CACHÉ"):
         st.cache_data.clear()
         st.rerun()
 
+    # 2. LISTADO DE HOJAS (LO QUE PEDISTE)
+    st.markdown("### 🔍 Hojas detectadas en Google Sheets:")
+    try:
+        nombres_hojas = database.debug_get_sheet_names()
+        st.code(nombres_hojas) # Muestra la lista tal cual la ve Python
+    except Exception as e:
+        st.error(f"No se pudieron leer los nombres: {e}")
+
+    st.divider()
+
+    # 3. DATOS QUE SE ESTÁN LEYENDO ACTUALMENTE
     if df_hist.empty:
-        st.error("⚠️ El Historial está vacío. El sistema rechazó la hoja porque detectó que era el Portafolio (columnas CoolDown detectadas) o no encontró la hoja 'Historial'.")
+        st.error("⚠️ El DataFrame de Historial está vacío.")
     else:
         st.write(f"**Filas leídas:** {len(df_hist)}")
-        st.write(f"**Columnas:** {cols_hist_leidas}")
+        st.write(f"**Columnas detectadas:** {cols_hist_leidas}")
         
-        if 'Resultado_Neto' in df_hist.columns:
-            st.success("✅ Hoja 'Historial' detectada correctamente.")
-            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].tail())
-        else:
-            st.error("❌ Se leyeron datos pero falta 'Resultado_Neto'. Probablemente sea la hoja incorrecta.")
-            st.dataframe(df_hist.head())
+        # Muestra las primeras filas para ver si es Portafolio o Historial
+        st.dataframe(df_hist.head(3))
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
