@@ -46,7 +46,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Con Caché y protección Arrow) ---
+# --- LECTURA PORTAFOLIO ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -60,6 +60,7 @@ def get_portafolio_df():
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
         
+        # Limpieza incluyendo columnas peligrosas para evitar PyArrow error
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
@@ -68,11 +69,11 @@ def get_portafolio_df():
             
         if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (SIN CACHÉ PARA DEBUGGING) ---
-# IMPORTANTE: He quitado el decorador de caché para forzar la ejecución y ver los logs.
+# --- LECTURA HISTORIAL (JERARQUÍA CORREGIDA) ---
+# Sin caché por ahora para validar el arreglo
 @retry_api_call
 def get_historial_df():
     logs = [f"--- DEBUG RUN {time.strftime('%H:%M:%S')} ---"]
@@ -80,59 +81,56 @@ def get_historial_df():
     try:
         sh = _get_connection()
         worksheets = sh.worksheets()
-        logs.append(f"Hojas disponibles: {[w.title for w in worksheets]}")
+        logs.append(f"Hojas: {[w.title for w in worksheets]}")
         
         target_ws = None
         
-        # BÚSQUEDA EXPLICITA
         for i, ws in enumerate(worksheets):
             title = ws.title.strip()
-            logs.append(f"Analizando: '{title}'")
+            logs.append(f"Check: '{title}'")
             
-            try:
-                headers = ws.row_values(1)
-                headers_upper = [str(h).strip().upper() for h in headers]
-            except: 
-                logs.append(" -> Error leyendo headers")
-                continue
-
-            # RECHAZO
-            if any(p in headers_upper for p in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
-                logs.append(" -> RECHAZADA (Portafolio)")
-                continue
-
-            # ACEPTACIÓN
-            # 1. Por Nombre exacto
+            # REGLA 1 (SUPREMA): Si se llama Historial, ES Historial.
             if "HISTORIAL" in title.upper():
-                logs.append(" -> ✅ SELECCIONADA (Por Nombre)")
+                logs.append(" -> ✅ SELECCIONADA (Por Nombre - Inmunidad Diplomática)")
                 target_ws = ws
                 break
             
-            # 2. Por Contenido (Plan B)
+            # Si NO se llama Historial, aplicamos las reglas de contenido
+            try:
+                headers = ws.row_values(1)
+                headers_upper = [str(h).strip().upper() for h in headers]
+            except: continue
+
+            # REGLA 2: Rechazo por contenido (Solo si el nombre no coincidió antes)
+            if any(p in headers_upper for p in ['COOLDOWN_ALTA', 'ALERTA_ALTA']):
+                logs.append(" -> Ignorada (Parece Portafolio)")
+                continue
+
+            # REGLA 3: Aceptación por contenido (Último recurso)
             if any(k in h for h in headers_upper for k in ["RESULT", "GANANCIA", "P&L", "NETO"]):
                 logs.append(" -> ✅ SELECCIONADA (Por Contenido)")
                 target_ws = ws
                 break
 
         if not target_ws:
-            logs.append("❌ FATAL: No se eligió ninguna hoja.")
+            logs.append("❌ FATAL: Ninguna hoja pasó las reglas.")
             st.session_state['db_logs'] = logs
             return pd.DataFrame()
 
         # LECTURA
         data = target_ws.get_all_records()
         if not data:
-            logs.append("⚠️ La hoja seleccionada está VACÍA.")
+            logs.append("⚠️ Hoja vacía.")
             st.session_state['db_logs'] = logs
             return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        logs.append(f"Filas crudas: {len(df)}")
-        logs.append(f"Columnas crudas: {list(df.columns)}")
-
-        # Renombrado de columnas
+        logs.append(f"Filas: {len(df)}")
+        
+        # Normalización
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
+        # Mapeo
         col_map = {}
         for c in df.columns:
             cu = c.upper()
@@ -142,24 +140,23 @@ def get_historial_df():
         
         if col_map: 
             df.rename(columns=col_map, inplace=True)
-            logs.append(f"Mapeo aplicado: {col_map}")
-        else:
-            logs.append("⚠️ ALERTA: No se encontró columna para 'Resultado_Neto'.")
+            logs.append(f"Mapeo: {col_map}")
 
-        # Limpieza Numérica (CRÍTICO)
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
+        # Limpieza Numérica (CRÍTICO: Limpiamos TODO lo que parezca número para evitar crash por las columnas heredadas)
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'CoolDown_Alta', 'CoolDown_Baja', 'Alerta_Alta']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-                if c == 'Resultado_Neto':
-                    logs.append(f"Suma de Resultado_Neto tras limpieza: {df[c].sum()}")
 
-        st.session_state['db_logs'] = logs # Guardar logs
+        if 'Resultado_Neto' in df.columns:
+             logs.append(f"Suma Total DB: {df['Resultado_Neto'].sum()}")
+
+        st.session_state['db_logs'] = logs
         return df
 
     except Exception as e:
-        logs.append(f"🔥 EXCEPCIÓN: {e}")
+        logs.append(f"🔥 Error: {e}")
         st.session_state['db_logs'] = logs
         return pd.DataFrame()
 
