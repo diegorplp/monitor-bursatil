@@ -38,16 +38,15 @@ if not df_port.empty:
     if 'Valor_Salida_Neto' in df_validos.columns:
         valor_cartera = df_validos['Valor_Salida_Neto'].sum()
 
-# 2. Historial (FIX FINAL)
-col_usada = "Ninguna / Error"
-if not df_hist.empty:
-    if 'Resultado_Neto' in df_hist.columns:
-        ganancia_realizada = df_hist['Resultado_Neto'].sum()
-        col_usada = 'Resultado_Neto'
-    else:
-        # Si no hay columna Resultado, NO sumamos nada raro.
-        ganancia_realizada = 0.0
-        col_usada = "❌ FALTA COLUMNA RESULTADO"
+# 2. Historial
+col_usada = "Ninguna"
+cols_hist_leidas = list(df_hist.columns) if not df_hist.empty else []
+
+if not df_hist.empty and 'Resultado_Neto' in df_hist.columns:
+    ganancia_realizada = df_hist['Resultado_Neto'].sum()
+    col_usada = 'Resultado_Neto'
+elif not df_hist.empty:
+    col_usada = "❌ ERROR: No se encontró 'Resultado_Neto'"
 
 resultado_global = ganancia_latente + ganancia_realizada
 
@@ -61,18 +60,22 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 st.divider()
 
 # --- DIAGNÓSTICO ---
-with st.expander("🕵️ Diagnóstico de Historial", expanded=(ganancia_realizada == 0)):
-    st.write(f"**Filas leídas:** {len(df_hist)}")
+with st.expander("🕵️ Diagnóstico de Historial (Si da $0 o error)", expanded=(ganancia_realizada == 0)):
+    if st.button("🔄 FORZAR RECARGA DE CACHÉ (Arreglar Bug de Hoja)"):
+        st.cache_data.clear()
+        st.rerun()
+
     if df_hist.empty:
-        st.error("⚠️ El Historial está vacío. Puede ser que la hoja no se llame 'Historial' exactamente, o que el sistema haya bloqueado la carga por detectar que era el Portafolio.")
+        st.error("⚠️ El Historial está vacío. El sistema rechazó la hoja porque detectó que era el Portafolio (columnas CoolDown detectadas) o no encontró la hoja 'Historial'.")
     else:
-        st.write(f"**Columnas:** {list(df_hist.columns)}")
-        st.write(f"**Columna Sumada:** {col_usada}")
+        st.write(f"**Filas leídas:** {len(df_hist)}")
+        st.write(f"**Columnas:** {cols_hist_leidas}")
+        
         if 'Resultado_Neto' in df_hist.columns:
-            st.success("✅ Estructura correcta.")
-            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].head())
+            st.success("✅ Hoja 'Historial' detectada correctamente.")
+            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].tail())
         else:
-            st.error("❌ Se leyó una hoja, pero no tiene columna de Resultado. ¿Es la hoja correcta?")
+            st.error("❌ Se leyeron datos pero falta 'Resultado_Neto'. Probablemente sea la hoja incorrecta.")
             st.dataframe(df_hist.head())
 
 # --- GRÁFICOS ---
