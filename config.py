@@ -27,20 +27,6 @@ if IS_STREAMLIT_CLOUD:
         # SI FALLA LA LECTURA DE SECRETS, LA APP DEBE FALLAR. NO HAY PLAN B EN LA NUBE.
         raise Exception("ERROR FATAL DE SEGURIDAD: Faltan claves en Streamlit Secrets. No se puede iniciar la conexión con IOL/Google.")
 
-else:
-    # MODO LOCAL (TU PC):
-    # El código lee las credenciales directamente, ya que el archivo config.py NO SUBE A GITHUB
-    # (El usuario debe mantener sus credenciales aquí localmente).
-    USE_CLOUD_AUTH = False
-    GOOGLE_CREDENTIALS_DICT = None
-    
-    # --- ESPACIO PARA TUS CLAVES LOCALES ---
-    # Nota: Tu archivo config.py local debe contener estos valores sin st.secrets
-    IOL_USER = "diego_rp_94@live.com"
-    IOL_PASSWORD = "*iI213322"
-    SHEET_NAME = "para_streamlit"
-    CREDENTIALS_FILE = "carbon-broker-479906-a2-157f549dc6b7.json"
-
 # --- CONFIGURACIÓN GENERAL (A PARTIR DE AQUÍ SON SOLO TASAS Y LISTAS) ---
 DIAS_HISTORIAL = 200
 
