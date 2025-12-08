@@ -3,10 +3,13 @@ import pandas as pd
 import altair as alt
 import database
 import market_logic
+import manager # Importar manager
 
 st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
 
 st.title("📊 Rendimiento del Portafolio")
+
+manager.mostrar_boton_actualizar()
 
 # --- VERIFICACIÓN DE DATOS ---
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:

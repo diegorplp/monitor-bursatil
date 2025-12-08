@@ -4,9 +4,12 @@ from datetime import datetime
 import database
 import market_logic
 import config
+import manager # Importar manager
 
 st.set_page_config(page_title="Portafolio", layout="wide")
 st.title("💰 Tu Portafolio y Señales de Venta")
+
+manager.mostrar_boton_actualizar()
 
 # --- ESTILOS ---
 def get_styled_portafolio(df):
