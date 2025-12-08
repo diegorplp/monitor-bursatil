@@ -10,7 +10,7 @@ st.title("📊 Rendimiento del Portafolio")
 
 manager.mostrar_boton_actualizar()
 
-# --- CARGA ---
+# --- CARGA DATOS ---
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:
     st.warning("⚠️ Sin precios. Actualiza.")
     st.stop()
@@ -27,7 +27,7 @@ ganancia_latente = 0.0
 valor_cartera = 0.0
 ganancia_realizada = 0.0
 
-# 1. Portafolio (Tenencia)
+# 1. Tenencia
 df_validos = pd.DataFrame()
 if not df_port.empty:
     df_analizado = market_logic.analizar_portafolio(df_port, st.session_state.precios_actuales)
@@ -38,44 +38,42 @@ if not df_port.empty:
     if 'Valor_Salida_Neto' in df_validos.columns:
         valor_cartera = df_validos['Valor_Salida_Neto'].sum()
 
-# 2. Historial (Ventas) - EL FIX
-col_usada = "Ninguna"
+# 2. Historial (FIX FINAL)
+col_usada = "Ninguna / Error"
 if not df_hist.empty:
-    # database.py ya intentó renombrar a 'Resultado_Neto'. Verificamos.
     if 'Resultado_Neto' in df_hist.columns:
         ganancia_realizada = df_hist['Resultado_Neto'].sum()
         col_usada = 'Resultado_Neto'
     else:
-        # Último intento desesperado: sumar la columna 9 (índice 8) si existe
-        if len(df_hist.columns) > 8:
-            try:
-                # Asumiendo estructura fija si fallan los nombres
-                ganancia_realizada = pd.to_numeric(df_hist.iloc[:, 8], errors='coerce').sum()
-                col_usada = f"Índice 8 ({df_hist.columns[8]})"
-            except: pass
+        # Si no hay columna Resultado, NO sumamos nada raro.
+        ganancia_realizada = 0.0
+        col_usada = "❌ FALTA COLUMNA RESULTADO"
 
 resultado_global = ganancia_latente + ganancia_realizada
 
 # --- UI ---
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Valor Cartera", f"${valor_cartera:,.0f}")
-c2.metric("Ganancia Latente (Tenencia)", f"${ganancia_latente:,.0f}")
-c3.metric("Ganancia Realizada (Ventas)", f"${ganancia_realizada:,.0f}")
+c2.metric("Ganancia Latente", f"${ganancia_latente:,.0f}")
+c3.metric("Ganancia Realizada", f"${ganancia_realizada:,.0f}")
 c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- DIAGNÓSTICO (IMPORTANTE) ---
-with st.expander("🕵️ ¿Por qué mi Ganancia Realizada es 0?", expanded=False):
-    st.write(f"**Filas en Historial:** {len(df_hist)}")
-    st.write(f"**Columnas encontradas:** {list(df_hist.columns)}")
-    st.write(f"**Columna usada para suma:** {col_usada}")
-    
-    if not df_hist.empty:
-        st.write("Vista previa de datos (verifica si los números se ven bien):")
-        st.dataframe(df_hist.head())
+# --- DIAGNÓSTICO ---
+with st.expander("🕵️ Diagnóstico de Historial", expanded=(ganancia_realizada == 0)):
+    st.write(f"**Filas leídas:** {len(df_hist)}")
+    if df_hist.empty:
+        st.error("⚠️ El Historial está vacío. Puede ser que la hoja no se llame 'Historial' exactamente, o que el sistema haya bloqueado la carga por detectar que era el Portafolio.")
     else:
-        st.error("El DataFrame de historial está VACÍO. Revisa que la pestaña en Google Sheets contenga 'Historial' en el nombre.")
+        st.write(f"**Columnas:** {list(df_hist.columns)}")
+        st.write(f"**Columna Sumada:** {col_usada}")
+        if 'Resultado_Neto' in df_hist.columns:
+            st.success("✅ Estructura correcta.")
+            st.dataframe(df_hist[['Ticker', 'Resultado_Neto']].head())
+        else:
+            st.error("❌ Se leyó una hoja, pero no tiene columna de Resultado. ¿Es la hoja correcta?")
+            st.dataframe(df_hist.head())
 
 # --- GRÁFICOS ---
 if not df_validos.empty:
