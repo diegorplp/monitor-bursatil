@@ -9,189 +9,131 @@ from datetime import datetime
 try:
     from config import SHEET_NAME, CREDENTIALS_FILE, COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO, USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT
 except ImportError:
-    SHEET_NAME = ""
-    CREDENTIALS_FILE = ""
-    COMISIONES = {}
-    IVA = 1.21
-    DERECHOS_MERCADO = 0.0008
-    VETA_MINIMO = 50
-    USE_CLOUD_AUTH = False
-    GOOGLE_CREDENTIALS_DICT = {}
+    SHEET_NAME, CREDENTIALS_FILE = "", ""
+    COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO = {}, 1.21, 0.0008, 50
+    USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
 
 # --- UTILIDADES ---
-def _calcular_costo_operacion(monto_bruto, broker):
-    broker = str(broker).upper().strip()
-    if broker == 'VETA':
-        TASA = 0.0015
-        comision_base = max(VETA_MINIMO, monto_bruto * TASA)
-        gastos = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
-        return gastos
-    else:
-        tasa = COMISIONES.get(broker, 0.006)
-        return monto_bruto * tasa
-
 def _clean_number_str(val):
-    """Limpieza agresiva de números."""
+    """Limpieza robusta de números (Soporta $1.000,00 / 1,000.00 / (500))"""
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
     
     s = str(val).strip()
+    is_negative = s.startswith('(') and s.endswith(')')
     
-    # Soporte para negativos contables entre paréntesis: (100) -> -100
-    is_negative = False
-    if s.startswith('(') and s.endswith(')'):
-        is_negative = True
-    
-    # Eliminar todo excepto dígitos, puntos, comas y guiones
+    # Dejar solo números, puntos, comas y menos
     s = re.sub(r'[^\d,.-]', '', s)
-    
     if not s: return 0.0
 
-    # Lógica de detección de formato decimal (Latam vs USA)
+    # Lógica de detección de formato
     if '.' in s and ',' in s:
-        if s.rfind('.') < s.rfind(','): 
-            s = s.replace('.', '').replace(',', '.') # Latam: 1.000,50 -> 1000.50
-        else: 
-            s = s.replace(',', '') # USA: 1,000.50 -> 1000.50
+        if s.rfind('.') < s.rfind(','): # Formato Europeo/Latam: 1.000,00
+            s = s.replace('.', '').replace(',', '.')
+        else: # Formato USA: 1,000.00
+            s = s.replace(',', '')
     elif ',' in s: 
-        s = s.replace(',', '.') # Asumimos coma decimal si solo hay coma
-    
-    try: 
-        num = float(s)
-        return -num if is_negative else num
+        s = s.replace(',', '.') # Solo coma -> decimal
+
+    try:
+        val_float = float(s)
+        return -val_float if is_negative else val_float
     except: return 0.0
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
-        max_retries = 3
-        for i in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except APIError as e:
-                if e.response.status_code == 429: time.sleep((i + 1) * 2)
-                else: raise e
-            except Exception as e:
-                if "Quota exceeded" in str(e): time.sleep((i + 1) * 2)
-                else: raise e
+        for i in range(3):
+            try: return func(*args, **kwargs)
+            except Exception as e: time.sleep((i + 1) * 2)
         return func(*args, **kwargs)
     return wrapper
 
 # --- CONEXIÓN INTELIGENTE ---
 def _get_worksheet(name=None):
     try:
-        if USE_CLOUD_AUTH:
-            gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
-        else:
-            gc = gspread.service_account(filename=CREDENTIALS_FILE)
-            
+        if USE_CLOUD_AUTH: gc = gspread.service_account_from_dict(GOOGLE_CREDENTIALS_DICT)
+        else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
+        
         sh = gc.open(SHEET_NAME)
         
-        # Si no piden nombre, devolvemos la primera (Portafolio/Transacciones)
-        if not name:
-            return sh.get_worksheet(0)
+        # Si no piden nombre, devolvemos la primera (Portafolio)
+        if not name: return sh.get_worksheet(0)
 
-        # Búsqueda Robusta
+        # Búsqueda flexible de pestaña
         target = name.strip().lower()
-        lista_hojas = sh.worksheets()
-        titulos = [ws.title for ws in lista_hojas]
-        
-        # 1. Búsqueda Exacta
-        for ws in lista_hojas:
-            if ws.title.strip().lower() == target:
-                return ws
-        
-        # 2. Búsqueda Parcial ("Historial" encuentra "Historial de Ventas")
-        for ws in lista_hojas:
+        for ws in sh.worksheets():
             if target in ws.title.strip().lower():
-                print(f"⚠️ AVISO: Usando hoja '{ws.title}' para búsqueda '{name}'")
                 return ws
-                
-        print(f"ERROR CRÍTICO: No se encontró la pestaña '{name}'. Disponibles: {titulos}")
+        
+        # Si falla, imprimimos error para el log de Streamlit
+        print(f"⚠️ NO SE ENCONTRÓ HOJA '{name}'. Hojas disponibles: {[w.title for w in sh.worksheets()]}")
         raise WorksheetNotFound(f"Pestaña '{name}' no existe.")
-
     except Exception as e:
-        print(f"ERROR CONEXIÓN: {e}")
+        print(f"Error Conexión: {e}")
         raise e
 
-# --- LIMPIEZA CACHÉ ---
+# --- CACHÉ ---
 def clear_db_cache():
     get_portafolio_df.clear()
     get_historial_df.clear()
     get_favoritos.clear()
 
-# --- LECTURA PORTAFOLIO ---
+# --- LECTURA PORTAFOLIO (Tenencia) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
     try:
-        ws = _get_worksheet() # Default (Hoja 0)
+        ws = _get_worksheet() # Default
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
 
         df = pd.DataFrame(data)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Validación mínima para asegurar que es la hoja correcta
-        if 'Ticker' not in df.columns:
-            return pd.DataFrame()
-
-        def fix_ticker(t):
-            t = str(t).strip().upper()
-            if not t.endswith('.BA') and len(t) < 9 and len(t) > 0: return f"{t}.BA"
-            return t
-        df['Ticker'] = df['Ticker'].apply(fix_ticker)
-
-        cols_defs = {'Broker': 'DEFAULT', 'Alerta_Alta': 0.0, 'Alerta_Baja': 0.0}
-        for c, default in cols_defs.items():
-            if c not in df.columns: df[c] = default
-
-        for c in ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']:
-            if c in df.columns:
-                df[c] = df[c].apply(_clean_number_str)
-        
-        if 'Cantidad' in df.columns:
-            df = df[df['Cantidad'] > 0]
+        # Fix Ticker
+        if 'Ticker' in df.columns:
+            df['Ticker'] = df['Ticker'].apply(lambda x: f"{str(x).strip().upper()}.BA" if len(str(x)) < 9 and not str(x).endswith('.BA') else str(x).upper())
             
-        df['Fecha_Compra'] = pd.to_datetime(df['Fecha_Compra'], errors='coerce')
+        # Limpieza números
+        cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja']
+        for c in cols_num:
+            if c in df.columns: df[c] = df[c].apply(_clean_number_str)
+            
+        if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
-    except Exception as e:
-        print(f"Error Portafolio: {e}")
-        return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL ---
+# --- LECTURA HISTORIAL (Ventas Cerradas) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_historial_df():
     try:
-        # Busca explícitamente "Historial"
-        ws = _get_worksheet("Historial")
+        ws = _get_worksheet("Historial") # Busca algo que contenga "Historial"
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # Normalización de columnas: espacios a guiones bajos
+        # 1. Normalizar columnas (Quitar espacios extra y pasar a guión bajo)
         df.columns = [re.sub(r'\s+', '_', str(c).strip()) for c in df.columns]
         
-        # Intento de corrección si no encuentra 'Resultado_Neto'
+        # 2. Búsqueda inteligente de la columna de Resultado
+        # Si no existe 'Resultado_Neto', buscamos 'Ganancia', 'P&L' o 'Result'
         if 'Resultado_Neto' not in df.columns:
-            # Busca columnas candidatas
-            candidatos = [c for c in df.columns if 'RESULTADO' in c.upper()]
+            candidatos = [c for c in df.columns if any(x in c.upper() for x in ['RESULT', 'GANANCIA', 'NETO', 'P&L'])]
             if candidatos:
                 df.rename(columns={candidatos[0]: 'Resultado_Neto'}, inplace=True)
-            else:
-                print(f"ERROR: Hoja Historial leída ({ws.title}) pero SIN columna de resultado. Cols: {df.columns.tolist()}")
-                # Retornamos vacío para evitar errores posteriores, o el DF crudo para debug
-                return df 
-
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad']
+        
+        # 3. Limpieza Numérica
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Costo_Total', 'Ingreso_Neto']
         for c in cols_num:
             if c in df.columns: df[c] = df[c].apply(_clean_number_str)
-        
+            
         return df
     except Exception as e:
         print(f"Error Historial: {e}")
         return pd.DataFrame()
+
 
 def get_tickers_en_cartera():
     df = get_portafolio_df()
