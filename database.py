@@ -40,10 +40,17 @@ def _get_worksheet(name=None):
 def get_portafolio_df():
     try:
         ws = _get_worksheet()
+        # CRITICO: Obtenemos los valores. gspread get_all_records() empieza DESPUÉS del header
         data = ws.get_all_records()
-        if not data: return pd.DataFrame()
+
+        # Si no devuelve registros, la lista está vacía
+        if not data: 
+            # Imprimimos un mensaje de éxito para que no confunda al usuario
+            print("INFO: La hoja de Transacciones está vacía (Solo hay encabezados).")
+            return pd.DataFrame() 
         
-        df = pd.DataFrame(data)
+        # Filtramos filas donde el Ticker esté vacío (para evitar errores en la lectura de gspread)
+        df = pd.DataFrame([r for r in data if r.get('Ticker', '').strip()])
         df.columns = [c.strip() for c in df.columns]
         
         expected = ['Ticker', 'Fecha_Compra', 'Cantidad', 'Precio_Compra']
@@ -76,7 +83,7 @@ def get_portafolio_df():
         print(f"ERROR LEYENDO DB: {e}")
         return pd.DataFrame()
 
-        
+
 def get_historial_df():
     try:
         ws = _get_worksheet("Historial")
