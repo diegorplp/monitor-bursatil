@@ -13,9 +13,6 @@ except ImportError:
 
 # --- UTILIDADES ---
 def _clean_number_str(val):
-    """
-    Parsea strings numéricos manejando formatos mixtos (AR/US) y negativos.
-    """
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
     
@@ -53,7 +50,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO ---
+# --- LECTURA PORTAFOLIO (Con Caché - Este no falla) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -77,8 +74,8 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (Lógica Corregida + Caché Activado) ---
-@st.cache_data(ttl=60, show_spinner=False)
+# --- LECTURA HISTORIAL (SIN CACHÉ - NO TOCAR) ---
+# Se eliminó @st.cache_data deliberadamente porque causa inconsistencia en la selección de hoja.
 @retry_api_call
 def get_historial_df():
     try:
@@ -86,8 +83,7 @@ def get_historial_df():
         worksheets = sh.worksheets()
         target_ws = None
         
-        # 1. BÚSQUEDA POR NOMBRE (PRIORIDAD ABSOLUTA - INMUNIDAD A COLUMNAS)
-        # Esta es la parte que arregló tu problema: si se llama Historial, la usamos.
+        # 1. BÚSQUEDA POR NOMBRE (PRIORIDAD ABSOLUTA)
         for ws in worksheets:
             if "HISTORIAL" in ws.title.strip().upper():
                 target_ws = ws
@@ -98,7 +94,6 @@ def get_historial_df():
             for ws in worksheets:
                 try:
                     headers = [str(h).upper() for h in ws.row_values(1)]
-                    # Aquí mantenemos el filtro por si acaso, pero ya no afecta a tu hoja principal
                     if "COOLDOWN_ALTA" in headers and "ALERTA_ALTA" in headers: 
                         continue 
                     if any(k in h for h in headers for k in ["RESULT", "GANANCIA", "P&L"]):
@@ -113,10 +108,8 @@ def get_historial_df():
         
         df = pd.DataFrame(data)
         
-        # Normalización
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
-        # Mapeo
         col_map = {}
         for c in df.columns:
             cu = c.upper()
@@ -126,7 +119,6 @@ def get_historial_df():
         
         if col_map: df.rename(columns=col_map, inplace=True)
 
-        # Limpieza (Incluyendo Alertas para evitar crash de PyArrow)
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
                     'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
                     'Costo_Total_Origen', 'Ingreso_Total_Venta']
