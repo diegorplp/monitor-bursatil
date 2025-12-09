@@ -5,7 +5,6 @@ import config
 
 # --- DETECCIÓN DE BONOS ---
 def _es_bono(ticker):
-    """Detecta bonos (divisor 100)."""
     if not ticker: return False
     t = str(ticker).strip().upper()
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
@@ -15,27 +14,23 @@ def _es_bono(ticker):
         if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES (FORZADO A 0.45%) ---
+# --- CÁLCULO DE COMISIONES ---
 def calcular_comision_real(monto_bruto, broker):
     broker = str(broker).upper().strip()
     iva = config.IVA
     derechos = config.DERECHOS_MERCADO
     veta_min = config.VETA_MINIMO
     
-    # TASAS CORRECTAS (HARDCODED)
-    TASA_VETA = 0.0015   # 0.15%
-    TASA_GRAL = 0.0045   # 0.45%
-    
-    # 1. CASO VETA
+    # CASO VETA
     if broker == 'VETA':
-        comision_base = max(veta_min, monto_bruto * TASA_VETA)
+        tasa_veta = config.COMISIONES.get('VETA', 0.0015)
+        comision_base = max(veta_min, monto_bruto * tasa_veta)
         gastos = (comision_base * iva) + (monto_bruto * derechos)
         return gastos
     
-    # 2. LÓGICA GENERAL (Ignora config para usar 0.45%)
-    comision_base = monto_bruto * TASA_GRAL
-    comision_total = (comision_base * iva) + (monto_bruto * derechos)
-    
+    # CASO GENERAL
+    tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
+    comision_total = (monto_bruto * tasa * iva) + (monto_bruto * derechos)
     return comision_total
 
 # --- INDICADORES ---
@@ -113,19 +108,14 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
 
         divisor = 100 if _es_bono(ticker) else 1
         
-        # 1. Valor Bruto Actual
-        valor_bruto_actual = (p_actual * cant) / divisor
-        
-        # 2. Inversión Total (Costo)
         monto_compra_puro = (p_compra * cant) / divisor
         comis_compra = calcular_comision_real(monto_compra_puro, broker)
         inversion_total = monto_compra_puro + comis_compra
 
-        # 3. Valor Salida Neto
+        valor_bruto_actual = (p_actual * cant) / divisor
         comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker)
         valor_neto_salida = valor_bruto_actual - comis_venta_estimada
 
-        # 4. Ganancias
         gan_bruta_monto = valor_bruto_actual - monto_compra_puro
         gan_neta_monto = valor_neto_salida - inversion_total
         
