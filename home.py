@@ -67,31 +67,20 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
 paneles = ['Lider', 'Cedears', 'General', 'Bonos']
 iconos = {'Lider': '🏆', 'Cedears': '🌎', 'General': '📊', 'Bonos': 'b'}
 
-# Lógica de guardar estado de expansión
-def update_panel_state(key):
-    st.session_state[f'expanded_{key}'] = st.session_state[f'exp_{key}']
-    manager.actualizar_todo(silent=True) # Actualizar para cargar datos del panel
-
-
 for p in paneles:
     if p in config.TICKERS_CONFIG:
-        # 1. Obtener estado guardado
-        is_expanded = st.session_state.get(f'expanded_{p}', False)
-        with st.expander(f"{iconos.get(p, '')} {p}", 
-                         expanded=is_expanded, 
-                         key=f"exp_{p}",
-                         on_change=update_panel_state,
-                         args=(p,)):
+        # Ya no hay control de estado de expandido
+        with st.expander(f"{iconos.get(p, '')} {p}", expanded=False, key=f"exp_{p}"):
             
-            # 2. Botón de Carga
+            # El botón de carga ahora es la ÚNICA forma de cargar ese panel
             if st.button(f"Cargar {p}", key=f"btn_{p}"):
-                st.session_state[f'expanded_{p}'] = True # Marcar para mantener abierto
-                manager.actualizar_todo(silent=False)
+                # La lógica de manager.py debe asegurar que solo se cargue ese panel
+                manager.actualizar_panel_individual(p, config.TICKERS_CONFIG[p]) # Creamos una función simple en manager
                 st.rerun()
             
-            # 3. Renderizado Condicional
+            # Renderizado Condicional
             df_show = st.session_state.oportunidades[st.session_state.oportunidades.index.isin(config.TICKERS_CONFIG[p])]
             if not df_show.empty:
                 st.dataframe(get_styled_screener(df_show), use_container_width=True)
             else:
-                 if st.session_state.get(f'expanded_{p}', False): st.caption("Pulse Cargar para obtener datos.")
+                 st.caption("Pulse Cargar para obtener datos.")

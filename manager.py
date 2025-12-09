@@ -17,33 +17,12 @@ def init_session_state():
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
     
-    # Inicialización de estados de los expanders (solo Lider, Cedears, etc.)
-    paneles_a_revisar = ['Lider', 'Cedears', 'General', 'Bonos']
-    for panel in paneles_a_revisar:
-        if f'expanded_{panel}' not in st.session_state:
-            st.session_state[f'expanded_{panel}'] = False
-
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
-    """Combina tickers de Portafolio + Paneles Abiertos (USADO POR HOME)."""
+    """Solo carga Portafolio y MEP (USADO PARA LA CARGA INICIAL/AUTO-REFRESH)."""
     tickers_a_cargar = set()
-    
-    # 1. Cartera (SIEMPRE)
     tickers_a_cargar.update(database.get_tickers_en_cartera())
-    
-    # 2. Paneles Expandidos
-    paneles_a_revisar = ['Lider', 'Cedears', 'General', 'Bonos']
-
-    for panel in paneles_a_revisar:
-        is_expanded = st.session_state.get(f'expanded_{panel}', False)
-        
-        if is_expanded or not st.session_state.init_done:
-            if panel in config.TICKERS_CONFIG:
-                tickers_a_cargar.update(config.TICKERS_CONFIG[panel])
-            
-    # 3. MEP
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
-    
     return list(tickers_a_cargar)
 
 # --- LÓGICA DE ACTUALIZACIÓN BASE ---
@@ -126,6 +105,21 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.last_update = datetime.now()
 
 # --- FUNCIONES DE ORQUESTACIÓN ---
+def actualizar_panel_individual(nombre_panel, lista_tickers):
+    """NUEVA FUNCIÓN: Actualiza un solo panel (Lider, Bonos, etc.)"""
+    init_session_state()
+    # Los tickers a cargar son los del panel + los de MEP (para que el cálculo se haga bien)
+    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+    t_a_cargar = list(set(lista_tickers + t_mep))
+    
+    # La lista de tickers para la descarga DEBE contener la cartera completa también
+    # para que los precios de la cartera no desaparezcan de st.session_state.precios_actuales
+    t_cartera = database.get_tickers_en_cartera()
+    t_total_para_descarga = list(set(t_a_cargar + t_cartera))
+    
+    update_data(t_total_para_descarga, nombre_panel, silent=False)
+
+
 def actualizar_solo_cartera(silent=False):
     """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
     init_session_state()
@@ -142,7 +136,7 @@ def actualizar_solo_cartera(silent=False):
 
 
 def actualizar_todo(silent=False):
-    """Función para HOME y DASHBOARD (Actualiza todo lo visible)."""
+    """Función para HOME y DASHBOARD (Actualiza solo Portafolio y MEP)."""
     init_session_state()
     
     t_a_cargar = get_tickers_a_cargar()
@@ -154,14 +148,12 @@ def actualizar_todo(silent=False):
     update_data(t_a_cargar, "Mercado Global", silent=silent)
 
 
-# --- WIDGET DE SIDEBAR (BOTÓN GLOBAL) ---
+# --- WIDGET DE SIDEBAR ---
 def mostrar_boton_actualizar():
-    """Vuelve a renderizar el botón de la sidebar (solo para Home)."""
     init_session_state()
     st.sidebar.markdown("---")
     st.sidebar.subheader("📡 Datos de Mercado")
     
-    # Este botón llama a la función actualizar_todo
     if st.sidebar.button("🔄 Actualizar Todo", use_container_width=True):
         st.session_state.init_done = False
         st.rerun()
