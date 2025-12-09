@@ -11,8 +11,8 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
-    # Valores por defecto
-    COMISIONES = {'DEFAULT': 0.006} 
+    # CORRECCIÓN: Tasa base estándar 0.45%
+    COMISIONES = {'DEFAULT': 0.0045} 
     IVA = 1.21
     DERECHOS_MERCADO = 0.0008
     VETA_MINIMO = 50
@@ -52,23 +52,22 @@ def _es_bono(ticker):
 
 def _calcular_comision_real(broker, monto_bruto):
     """
-    Cálculo de comisiones.
-    Ahora COCOS entra en la lógica general (Tasa + IVA + Derechos).
+    Cálculo de comisiones con base 0.45% (Default/Cocos/Bull) y 0.15% (Veta).
     """
     broker = str(broker).upper().strip()
     
-    # CASO ESPECIAL: VETA (Estructura de mínimo)
+    # CASO ESPECIAL: VETA
     if broker == 'VETA':
-        tasa_veta = 0.0015 # 0.15%
+        tasa_veta = 0.0015 # 0.15% Base
         comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
         costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return costo_total
     
-    # CASO GENERAL (COCOS, BULL, PPI, IOL)
-    # Busca la tasa en config.COMISIONES (ej: 0.006 para Cocos)
-    tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.006))
+    # CASO GENERAL (COCOS, BULL, IOL)
+    # Tasa Base: 0.45% (0.0045)
+    tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
     
-    # Fórmula: (Monto * Tasa * IVA) + (Monto * Derechos)
+    # Fórmula: (Monto * 0.0045 * 1.21) + (Monto * 0.0008)
     comision_base = monto_bruto * tasa
     costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
     
@@ -207,7 +206,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         # 1. Ajuste por Bonos
         divisor = 100 if _es_bono(ticker) else 1
         
-        # 2. Cálculos (Ahora usa la lógica general para Cocos)
+        # 2. Cálculos (Base 0.45% para General, 0.15% para Veta)
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
