@@ -11,10 +11,9 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
-    # Valores de seguridad
     COMISIONES = {'DEFAULT': 0.0045} 
     IVA = 1.21
-    DERECHOS_MERCADO = 0.0008
+    DERECHOS_MERCADO = 0.0005 # Actualizado por seguridad
     VETA_MINIMO = 50
 
 # --- UTILIDADES ---
@@ -50,20 +49,31 @@ def _es_bono(ticker):
     return False
 
 def _calcular_comision_real(broker, monto_bruto):
+    """
+    Cálculo AJUSTADO A FACTURA REAL.
+    Fórmula: (Comisión + Derechos) * IVA
+    """
     broker = str(broker).upper().strip()
     
-    # CASO ESPECIAL: VETA (Mínimo $50)
+    # 1. CASO VETA
     if broker == 'VETA':
         tasa_veta = COMISIONES.get('VETA', 0.0015)
         comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
-        costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
+        derechos = monto_bruto * DERECHOS_MERCADO
+        # Veta aplica IVA sobre todo
+        costo_total = (comision_base + derechos) * IVA
         return costo_total
     
-    # CASO GENERAL (Lee config.py)
+    # 2. CASO GENERAL (Cocos, etc.)
     tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
-    comision_total = (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
     
-    return comision_total
+    comision_base = monto_bruto * tasa
+    derechos = monto_bruto * DERECHOS_MERCADO
+    
+    # La factura muestra que el IVA aplica sobre la suma de ambos
+    costo_total = (comision_base + derechos) * IVA
+    
+    return costo_total
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
@@ -78,7 +88,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Con Caché) ---
+# --- LECTURA PORTAFOLIO ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -88,21 +98,18 @@ def get_portafolio_df():
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
-        
         if 'Ticker' in df.columns:
             df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
-        
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-            
         if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (SIN CACHÉ) ---
+# --- LECTURA HISTORIAL ---
 @retry_api_call
 def get_historial_df():
     try:
@@ -128,7 +135,6 @@ def get_historial_df():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
-        
         col_map = {}
         for c in df.columns:
             cu = c.upper()
@@ -136,10 +142,7 @@ def get_historial_df():
             elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
             elif cu == "P&L": col_map[c] = 'Resultado_Neto'
         if col_map: df.rename(columns=col_map, inplace=True)
-
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
-                    'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
-                    'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja', 'Costo_Total_Origen', 'Ingreso_Total_Venta']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
@@ -155,24 +158,19 @@ def add_transaction(datos):
     try:
         sh = _get_connection()
         ws = sh.get_worksheet(0)
-        
         ticker_raw = str(datos['Ticker']).strip().upper()
         if '.' not in ticker_raw and len(ticker_raw) < 10:
             ticker_raw += ".BA"
-            
         fecha = datos['Fecha_Compra']
         cantidad = datos['Cantidad']
         precio = datos['Precio_Compra']
         broker = datos['Broker']
         alerta_alta = datos.get('Alerta_Alta', 0.0)
         alerta_baja = datos.get('Alerta_Baja', 0.0)
-        
         nueva_fila = [ticker_raw, fecha, cantidad, precio, broker, alerta_alta, alerta_baja, 0, 0]
         ws.append_row(nueva_fila)
-        
         get_portafolio_df.clear()
         return True, f"Compra de {ticker_raw} guardada correctamente."
-        
     except Exception as e: return False, f"Error: {e}"
 
 # --- ESCRITURA VENTA ---
@@ -191,7 +189,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         data = ws_port.get_all_records()
         fila_idx = -1
         row_data = None
-        
         for i, d in enumerate(data):
             t_data = str(d.get('Ticker', '')).upper().strip()
             f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
@@ -201,19 +198,14 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
                     fila_idx = i + 2
                     row_data = d
                     break
-        
         if fila_idx == -1: return False, "Lote no encontrado."
 
         cant_actual = int(_clean_number_str(row_data.get('Cantidad', 0)))
         precio_compra = float(_clean_number_str(row_data.get('Precio_Compra', 0)))
         broker = str(row_data.get('Broker', 'DEFAULT')).upper()
-        
         if cantidad_a_vender > cant_actual: return False, "Cantidad insuficiente."
 
-        # Bonos
         divisor = 100 if _es_bono(ticker) else 1
-        
-        # Comisiones (Ahora usa config.py correctamente)
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
@@ -241,8 +233,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             if col_cant > 0:
                 ws_port.update_cell(fila_idx, col_cant, nueva_cantidad)
                 msg = "Venta Parcial OK."
-            else:
-                return False, "Error estructura Excel."
+            else: return False, "Error estructura Excel."
 
         get_portafolio_df.clear()
         return True, msg
@@ -260,13 +251,11 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, alerta_alta, alerta_baja):
                 fila_idx = i + 2
                 break
         if fila_idx == -1: return False, "Lote no encontrado."
-        
         headers = ws.row_values(1)
         col_a, col_b = -1, -1
         for i, h in enumerate(headers):
             if str(h).strip() == 'Alerta_Alta': col_a = i + 1
             if str(h).strip() == 'Alerta_Baja': col_b = i + 1
-        
         if col_a > 0: ws.update_cell(fila_idx, col_a, alerta_alta)
         if col_b > 0: ws.update_cell(fila_idx, col_b, alerta_baja)
         get_portafolio_df.clear()

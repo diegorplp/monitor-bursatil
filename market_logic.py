@@ -14,7 +14,7 @@ def _es_bono(ticker):
         if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES ---
+# --- CÁLCULO DE COMISIONES (AJUSTADO A FACTURA) ---
 def calcular_comision_real(monto_bruto, broker):
     broker = str(broker).upper().strip()
     iva = config.IVA
@@ -25,13 +25,19 @@ def calcular_comision_real(monto_bruto, broker):
     if broker == 'VETA':
         tasa_veta = config.COMISIONES.get('VETA', 0.0015)
         comision_base = max(veta_min, monto_bruto * tasa_veta)
-        gastos = (comision_base * iva) + (monto_bruto * derechos)
-        return gastos
+        # Fórmula Factura: (Comisión + Derechos) * IVA
+        costo_total = (comision_base + (monto_bruto * derechos)) * iva
+        return costo_total
     
     # CASO GENERAL
     tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
-    comision_total = (monto_bruto * tasa * iva) + (monto_bruto * derechos)
-    return comision_total
+    
+    comision_base = monto_bruto * tasa
+    costo_derechos = monto_bruto * derechos
+    
+    # Fórmula Factura: (Comisión + Derechos) * IVA
+    costo_total = (comision_base + costo_derechos) * iva
+    return costo_total
 
 # --- INDICADORES ---
 def calcular_indicadores(df_historico_raw):

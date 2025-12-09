@@ -27,12 +27,12 @@ except Exception as e:
 # --- CONFIGURACIÓN GENERAL ---
 DIAS_HISTORIAL = 200
 
-# TASAS ACTUALIZADAS
+# TASAS ACTUALIZADAS SEGÚN FACTURA REAL
 IVA = 1.21
-DERECHOS_MERCADO = 0.0008
+# CORRECCIÓN: La factura muestra 0.05% (12.32 / 24640), no 0.08%
+DERECHOS_MERCADO = 0.0005 
 VETA_MINIMO = 50
 
-# Corrección: 0.45% para el mercado general, 0.15% para Veta
 COMISIONES = {
     'IOL': 0.0045, 
     'BULL': 0.0045, 
