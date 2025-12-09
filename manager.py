@@ -10,17 +10,12 @@ from typing import List
 
 # --- INICIALIZACIÓN DE ESTADO ---
 def init_session_state():
-    # Lista de TODAS las columnas financieras que el screener espera
     screener_cols = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
 
     if 'oportunidades' not in st.session_state:
-        # Crea un DataFrame vacío con todos los Tickers posibles como índice
         df_base = pd.DataFrame(index=config.TICKERS)
-        
-        # Agrega las columnas financieras esperadas y las inicializa a NaN
         for col in screener_cols:
-             df_base[col] = pd.NA # Usamos pd.NA para tipo compatible con strings/numéricos
-        
+             df_base[col] = pd.NA
         df_base['Senal'] = df_base['Senal'].fillna('PENDIENTE')
         st.session_state.oportunidades = df_base
         
@@ -71,7 +66,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             # Fusión
             df_total = st.session_state.oportunidades.copy()
             
-            # CRÍTICO: Las columnas ya existen, solo actualizamos las filas
             for idx in df_nuevo_screener.index:
                  if idx in df_total.index:
                      df_total.loc[idx] = df_nuevo_screener.loc[idx]
@@ -121,17 +115,20 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
 # --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
+    """NUEVA FUNCIÓN: Actualiza un solo panel (Lider, Bonos, etc.)"""
     init_session_state()
     
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
     t_cartera = database.get_tickers_en_cartera()
     
+    # La descarga incluye el panel solicitado + cartera + MEP
     t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
     
     update_data(t_a_cargar, nombre_panel, silent=False)
 
 
 def actualizar_solo_cartera(silent=False):
+    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
     init_session_state()
     
     t_cartera = database.get_tickers_en_cartera()
@@ -146,6 +143,7 @@ def actualizar_solo_cartera(silent=False):
 
 
 def actualizar_todo(silent=False):
+    """Función para HOME y DASHBOARD (Actualiza solo Portafolio y MEP)."""
     init_session_state()
     
     t_a_cargar = get_tickers_a_cargar()
