@@ -14,29 +14,38 @@ def _es_bono(ticker):
         if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES (AJUSTADO A FACTURA) ---
-def calcular_comision_real(monto_bruto, broker):
+# --- CÁLCULO DE COMISIONES ---
+def calcular_comision_real(monto_bruto, broker, es_bono=False):
     broker = str(broker).upper().strip()
-    iva = config.IVA
-    derechos = config.DERECHOS_MERCADO
-    veta_min = config.VETA_MINIMO
     
+    # Definir tasas según tipo de activo
+    if es_bono:
+        tasa_derechos = config.DERECHOS_BONOS
+        multiplicador_iva = 1.0
+    else:
+        tasa_derechos = config.DERECHOS_ACCIONES
+        multiplicador_iva = config.IVA
+        
     # CASO VETA
     if broker == 'VETA':
         tasa_veta = config.COMISIONES.get('VETA', 0.0015)
+        veta_min = config.VETA_MINIMO
         comision_base = max(veta_min, monto_bruto * tasa_veta)
-        # Fórmula Factura: (Comisión + Derechos) * IVA
-        costo_total = (comision_base + (monto_bruto * derechos)) * iva
-        return costo_total
+        
+        gastos = (comision_base * multiplicador_iva) + (monto_bruto * tasa_derechos)
+        return gastos
     
     # CASO GENERAL
     tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
     
     comision_base = monto_bruto * tasa
-    costo_derechos = monto_bruto * derechos
+    derechos = monto_bruto * tasa_derechos
     
-    # Fórmula Factura: (Comisión + Derechos) * IVA
-    costo_total = (comision_base + costo_derechos) * iva
+    if es_bono:
+        costo_total = comision_base + derechos
+    else:
+        costo_total = (comision_base + derechos) * multiplicador_iva
+        
     return costo_total
 
 # --- INDICADORES ---
@@ -112,14 +121,16 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
         broker = row.get('Broker', 'DEFAULT')
         ticker = row['Ticker']
 
-        divisor = 100 if _es_bono(ticker) else 1
+        es_bono = _es_bono(ticker)
+        divisor = 100 if es_bono else 1
         
         monto_compra_puro = (p_compra * cant) / divisor
-        comis_compra = calcular_comision_real(monto_compra_puro, broker)
+        # Pasamos es_bono a la función de comisión
+        comis_compra = calcular_comision_real(monto_compra_puro, broker, es_bono=es_bono)
         inversion_total = monto_compra_puro + comis_compra
 
         valor_bruto_actual = (p_actual * cant) / divisor
-        comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker)
+        comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker, es_bono=es_bono)
         valor_neto_salida = valor_bruto_actual - comis_venta_estimada
 
         gan_bruta_monto = valor_bruto_actual - monto_compra_puro
