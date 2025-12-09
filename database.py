@@ -11,7 +11,11 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
-    COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO = {}, 1.21, 0.0008, 50
+    # Valores por defecto
+    COMISIONES = {'DEFAULT': 0.006} 
+    IVA = 1.21
+    DERECHOS_MERCADO = 0.0008
+    VETA_MINIMO = 50
 
 # --- UTILIDADES ---
 def _clean_number_str(val):
@@ -36,39 +40,39 @@ def _clean_number_str(val):
     except: return 0.0
 
 def _es_bono(ticker):
-    """
-    Detecta bonos argentinos de forma inteligente para aplicar divisor 100.
-    Evita confundir ALUA con AL30 o BABA con BA37.
-    """
-    t = str(ticker).upper().strip()
-    
-    # 1. Bonos históricos sin números (Excepciones manuales)
+    """Detecta bonos (divisor 100)."""
+    if not ticker: return False
+    t = str(ticker).strip().upper()
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
-    if t in bonos_letras: return True
-    
-    # 2. Prefijos de Bonos Soberanos/Subsoberanos/Bopreals
+    if any(b in t for b in bonos_letras): return True
     prefijos = ['AL', 'GD', 'TX', 'TO', 'BA', 'BP', 'TV', 'AE', 'SX', 'MR', 'CL', 'NO']
-    
     if any(t.startswith(p) for p in prefijos):
-        # LA REGLA DE ORO: Si empieza con AL/TX/BA...
-        # Solo es bono si TIENE NÚMEROS (Ej: AL30, TX24, BA37D).
-        # Si son solo letras (ALUA, TXAR, BABA), es Acción/Cedear.
-        if any(char.isdigit() for char in t):
-            return True
-        else:
-            return False # Caso ALUA, TXAR, BABA
-            
+        if any(char.isdigit() for char in t): return True
     return False
 
 def _calcular_comision_real(broker, monto_bruto):
+    """
+    Cálculo de comisiones.
+    Ahora COCOS entra en la lógica general (Tasa + IVA + Derechos).
+    """
     broker = str(broker).upper().strip()
-    if broker == 'COCOS': return 0.0
-    tasa = COMISIONES.get(broker, 0.006)
+    
+    # CASO ESPECIAL: VETA (Estructura de mínimo)
     if broker == 'VETA':
-        comision_base = monto_bruto * tasa
-        if comision_base < VETA_MINIMO: comision_base = VETA_MINIMO
-        return (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
-    return (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
+        tasa_veta = 0.0015 # 0.15%
+        comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
+        costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
+        return costo_total
+    
+    # CASO GENERAL (COCOS, BULL, PPI, IOL)
+    # Busca la tasa en config.COMISIONES (ej: 0.006 para Cocos)
+    tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.006))
+    
+    # Fórmula: (Monto * Tasa * IVA) + (Monto * Derechos)
+    comision_base = monto_bruto * tasa
+    costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
+    
+    return costo_total
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
@@ -93,12 +97,16 @@ def get_portafolio_df():
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
-        if 'Ticker' in df.columns: df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
+        
+        if 'Ticker' in df.columns:
+            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
+        
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+            
         if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
     except Exception: return pd.DataFrame()
@@ -110,10 +118,13 @@ def get_historial_df():
         sh = _get_connection()
         worksheets = sh.worksheets()
         target_ws = None
+        
+        # Búsqueda Inmune
         for ws in worksheets:
             if "HISTORIAL" in ws.title.strip().upper():
                 target_ws = ws
                 break
+        
         if not target_ws:
             for ws in worksheets:
                 try:
@@ -123,35 +134,46 @@ def get_historial_df():
                         target_ws = ws
                         break
                 except: continue
+
         if not target_ws: return pd.DataFrame()
 
         data = target_ws.get_all_records()
         if not data: return pd.DataFrame()
+        
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
+        
         col_map = {}
         for c in df.columns:
             cu = c.upper()
             if "RESULTADO" in cu and "NETO" in cu: col_map[c] = 'Resultado_Neto'
             elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
             elif cu == "P&L": col_map[c] = 'Resultado_Neto'
+        
         if col_map: df.rename(columns=col_map, inplace=True)
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja', 'Costo_Total_Origen', 'Ingreso_Total_Venta']
+
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
+                    'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
+                    'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+
         return df
+
     except Exception as e:
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
-# --- ESCRITURA ---
+# --- ESCRITURA DE VENTAS ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
         sh = _get_connection()
         ws_port = sh.get_worksheet(0)
+        
         ws_hist = None
         for w in sh.worksheets():
             if "HISTORIAL" in w.title.strip().upper():
@@ -167,6 +189,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             t_data = str(d.get('Ticker', '')).upper().strip()
             f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
             p_data = _clean_number_str(d.get('Precio_Compra', 0))
+            
             if t_data == ticker.upper().strip() and f_data == fecha_compra_str.strip()[:10]:
                 if precio_compra_id is None or abs(p_data - float(precio_compra_id)) < 0.01:
                     fila_idx = i + 2
@@ -181,9 +204,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cantidad_a_vender > cant_actual: return False, "Cantidad insuficiente."
 
-        # --- LÓGICA DE BONOS INTELIGENTE ---
+        # 1. Ajuste por Bonos
         divisor = 100 if _es_bono(ticker) else 1
         
+        # 2. Cálculos (Ahora usa la lógica general para Cocos)
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
@@ -194,22 +218,27 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         resultado_neto = ingreso_total_venta - costo_total_origen
 
+        # 3. Escritura
         nueva_fila = [ticker, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
         ws_hist.append_row(nueva_fila)
 
+        # 4. Actualización Portafolio
         if cantidad_a_vender == cant_actual:
             ws_port.delete_rows(fila_idx)
             msg = "Venta Total OK."
         else:
             nueva_cantidad = cant_actual - cantidad_a_vender
-            col_cant = -1
             headers = ws_port.row_values(1)
+            col_cant = -1
             for i, h in enumerate(headers):
                 if str(h).strip() == 'Cantidad':
                     col_cant = i + 1
                     break
-            ws_port.update_cell(fila_idx, col_cant, nueva_cantidad)
-            msg = "Venta Parcial OK."
+            if col_cant > 0:
+                ws_port.update_cell(fila_idx, col_cant, nueva_cantidad)
+                msg = "Venta Parcial OK."
+            else:
+                return False, "Error estructura Excel."
 
         get_portafolio_df.clear()
         return True, msg

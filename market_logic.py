@@ -3,48 +3,39 @@ import pandas_ta as ta
 import numpy as np
 import config
 
-# --- UTILIDAD: DETECCIÓN DE BONOS (Lógica Unificada) ---
+# --- DETECCIÓN DE BONOS ---
 def _es_bono(ticker):
-    """
-    Detecta bonos argentinos para aplicar divisor 100.
-    Unificada con la lógica de database.py para consistencia.
-    """
+    """Detecta bonos (divisor 100)."""
     if not ticker: return False
     t = str(ticker).strip().upper()
-    
-    # 1. Bonos históricos sin números
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
     if any(b in t for b in bonos_letras): return True
-    
-    # 2. Prefijos de Bonos
     prefijos = ['AL', 'GD', 'TX', 'TO', 'BA', 'BP', 'TV', 'AE', 'SX', 'MR', 'CL', 'NO']
-    
     if any(t.startswith(p) for p in prefijos):
-        # REGLA DE ORO: Si tiene NÚMEROS es bono (AL30). Si no (ALUA), es acción.
-        if any(char.isdigit() for char in t):
-            return True
-            
+        if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES ---
+# --- CÁLCULO DE COMISIONES (CORREGIDO) ---
 def calcular_comision_real(monto_bruto, broker):
     broker = str(broker).upper().strip()
     iva = config.IVA
     derechos = config.DERECHOS_MERCADO
     veta_min = config.VETA_MINIMO
     
+    # 1. CASO VETA
     if broker == 'VETA':
         TASA_VETA = 0.0015
         comision_base = max(veta_min, monto_bruto * TASA_VETA)
         gastos = (comision_base * iva) + (monto_bruto * derechos)
         return gastos
-    elif broker == 'COCOS':
-        return monto_bruto * derechos
-    else:
-        tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.006))
-        # Ajuste: En brokers normales, el IVA y Derechos suelen sumarse a la tasa base
-        comision_total = (monto_bruto * tasa * iva) + (monto_bruto * derechos)
-        return comision_total
+    
+    # 2. LÓGICA GENERAL (Incluye COCOS con su 0.6%)
+    # Si COCOS está en config.COMISIONES, lo usa. Si no, usa DEFAULT.
+    tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.006))
+    
+    # Fórmula estándar: Comisión + IVA + Derechos
+    comision_total = (monto_bruto * tasa * iva) + (monto_bruto * derechos)
+    return comision_total
 
 # --- INDICADORES ---
 def calcular_indicadores(df_historico_raw):
@@ -102,13 +93,12 @@ def calcular_indicadores(df_historico_raw):
     df_resumen['Senal'] = np.select(conditions, ['COMPRAR']*3, default='NEUTRO')
     return df_resumen
 
-# --- ANÁLISIS DE PORTAFOLIO (Rentabilidad) ---
+# --- ANÁLISIS DE PORTAFOLIO ---
 def analizar_portafolio(df_portafolio, series_precios_actuales):
     if df_portafolio.empty: return pd.DataFrame()
 
     df = df_portafolio.copy()
     df_precios = series_precios_actuales.to_frame(name='Precio_Actual')
-    # Merge con los precios actuales
     df = df.merge(df_precios, left_on='Ticker', right_index=True, how='left')
 
     def calc_fila(row):
@@ -120,18 +110,17 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
         broker = row.get('Broker', 'DEFAULT')
         ticker = row['Ticker']
 
-        # --- CORRECCIÓN BONOS (Divisor 100) ---
         divisor = 100 if _es_bono(ticker) else 1
         
-        # 1. Valor Bruto Actual (Mercado)
+        # 1. Valor Bruto Actual
         valor_bruto_actual = (p_actual * cant) / divisor
         
-        # 2. Inversión Total (Costo Origen)
+        # 2. Inversión Total (Costo)
         monto_compra_puro = (p_compra * cant) / divisor
         comis_compra = calcular_comision_real(monto_compra_puro, broker)
         inversion_total = monto_compra_puro + comis_compra
 
-        # 3. Valor Salida Neto (Estimado si vendiera hoy)
+        # 3. Valor Salida Neto
         comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker)
         valor_neto_salida = valor_bruto_actual - comis_venta_estimada
 
@@ -151,11 +140,9 @@ def analizar_portafolio(df_portafolio, series_precios_actuales):
     
     df[cols_calc] = df.apply(calc_fila, axis=1)
 
-    # Limpieza de infinitos
     df['%_Ganancia_Bruta'] = df['%_Ganancia_Bruta'].replace([np.inf, -np.inf], np.nan)
     df['%_Ganancia_Neto'] = df['%_Ganancia_Neto'].replace([np.inf, -np.inf], np.nan)
 
-    # Señales de Alerta
     cond_stop_loss = (df['Alerta_Baja'] > 0) & (df['Precio_Actual'] <= df['Alerta_Baja'])
     cond_take_profit = (df['Alerta_Alta'] > 0) & (df['Precio_Actual'] >= df['Alerta_Alta'])
     cond_tecnica = (df['%_Ganancia_Neto'] >= 0.02)
@@ -181,7 +168,6 @@ def calcular_mep(df_raw):
                 
                 mep_series = df_pair.iloc[:,0] / df_pair.iloc[:,1]
                 ultimo_mep = mep_series.iloc[-1]
-                
                 variacion = 0.0
                 if len(mep_series) >= 2:
                     variacion = (ultimo_mep / mep_series.iloc[-2]) - 1
