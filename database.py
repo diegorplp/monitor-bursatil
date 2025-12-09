@@ -11,7 +11,6 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
-    # Valores por defecto de seguridad
     COMISIONES, IVA, DERECHOS_MERCADO, VETA_MINIMO = {}, 1.21, 0.0008, 50
 
 # --- UTILIDADES ---
@@ -36,24 +35,40 @@ def _clean_number_str(val):
         return -val_float if is_negative else val_float
     except: return 0.0
 
+def _es_bono(ticker):
+    """
+    Detecta bonos argentinos de forma inteligente para aplicar divisor 100.
+    Evita confundir ALUA con AL30 o BABA con BA37.
+    """
+    t = str(ticker).upper().strip()
+    
+    # 1. Bonos históricos sin números (Excepciones manuales)
+    bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
+    if t in bonos_letras: return True
+    
+    # 2. Prefijos de Bonos Soberanos/Subsoberanos/Bopreals
+    prefijos = ['AL', 'GD', 'TX', 'TO', 'BA', 'BP', 'TV', 'AE', 'SX', 'MR', 'CL', 'NO']
+    
+    if any(t.startswith(p) for p in prefijos):
+        # LA REGLA DE ORO: Si empieza con AL/TX/BA...
+        # Solo es bono si TIENE NÚMEROS (Ej: AL30, TX24, BA37D).
+        # Si son solo letras (ALUA, TXAR, BABA), es Acción/Cedear.
+        if any(char.isdigit() for char in t):
+            return True
+        else:
+            return False # Caso ALUA, TXAR, BABA
+            
+    return False
+
 def _calcular_comision_real(broker, monto_bruto):
-    """Calcula la comisión exacta según broker."""
     broker = str(broker).upper().strip()
-    
-    if broker == 'COCOS':
-        return monto_bruto * 0.0 # Cocos no cobra comisión, solo derechos (que van aparte)
-        
-    tasa = COMISIONES.get(broker, 0.006) # Default 0.6%
-    
+    if broker == 'COCOS': return 0.0
+    tasa = COMISIONES.get(broker, 0.006)
     if broker == 'VETA':
         comision_base = monto_bruto * tasa
         if comision_base < VETA_MINIMO: comision_base = VETA_MINIMO
-        comision_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
-        return comision_total
-    
-    # Brokers estándar (Bull, PPI, IOL)
-    comision_total = (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
-    return comision_total
+        return (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
+    return (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
@@ -68,7 +83,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO ---
+# --- LECTURA PORTAFOLIO (Con Caché) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -78,21 +93,17 @@ def get_portafolio_df():
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
-        
-        if 'Ticker' in df.columns:
-            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
-        
+        if 'Ticker' in df.columns: df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-            
         if 'Cantidad' in df.columns: df = df[df['Cantidad'] > 0]
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL ---
+# --- LECTURA HISTORIAL (SIN CACHÉ) ---
 @retry_api_call
 def get_historial_df():
     try:
@@ -118,7 +129,6 @@ def get_historial_df():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
-        
         col_map = {}
         for c in df.columns:
             cu = c.upper()
@@ -126,10 +136,7 @@ def get_historial_df():
             elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
             elif cu == "P&L": col_map[c] = 'Resultado_Neto'
         if col_map: df.rename(columns=col_map, inplace=True)
-
-        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
-                    'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
-                    'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja', 'Costo_Total_Origen', 'Ingreso_Total_Venta']
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
@@ -139,166 +146,100 @@ def get_historial_df():
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
-# --- FUNCIONES DE ESCRITURA (NUEVO) ---
-
+# --- ESCRITURA ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
-    """
-    Ejecuta la venta moviendo datos de Portafolio a Historial.
-    Maneja venta parcial (update) y total (delete).
-    """
     try:
         sh = _get_connection()
         ws_port = sh.get_worksheet(0)
-        
-        # 1. Buscar la hoja Historial (Usando la misma lógica robusta)
         ws_hist = None
         for w in sh.worksheets():
             if "HISTORIAL" in w.title.strip().upper():
                 ws_hist = w
                 break
-        if not ws_hist: return False, "No se encontró hoja Historial para escribir."
+        if not ws_hist: return False, "No se encontró hoja Historial."
 
-        # 2. Leer Portafolio para encontrar la fila exacta
         data = ws_port.get_all_records()
         fila_idx = -1
         row_data = None
         
-        # Búsqueda manual de la fila por Ticker, Fecha y Precio
-        # Nota: gspread rows son 1-indexed y header es row 1, asi que data[0] es row 2.
         for i, d in enumerate(data):
-            # Normalización para comparar
             t_data = str(d.get('Ticker', '')).upper().strip()
-            f_data = str(d.get('Fecha_Compra', '')).strip()[:10] # Solo YYYY-MM-DD
+            f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
             p_data = _clean_number_str(d.get('Precio_Compra', 0))
-            
-            ticker_match = t_data == ticker.upper().strip()
-            # Comparación de fecha flexible
-            fecha_match = f_data == fecha_compra_str.strip()[:10]
-            
-            # Comparación de precio (opcional pero recomendada para desempatar lotes del mismo día)
-            precio_match = True
-            if precio_compra_id is not None:
-                precio_match = abs(p_data - float(precio_compra_id)) < 0.01
-
-            if ticker_match and fecha_match and precio_match:
-                fila_idx = i + 2 # +2 porque data empieza en 0 y sheet tiene header
-                row_data = d
-                break
+            if t_data == ticker.upper().strip() and f_data == fecha_compra_str.strip()[:10]:
+                if precio_compra_id is None or abs(p_data - float(precio_compra_id)) < 0.01:
+                    fila_idx = i + 2
+                    row_data = d
+                    break
         
-        if fila_idx == -1:
-            return False, f"No se encontró el lote en Portafolio (T:{ticker} F:{fecha_compra_str})."
+        if fila_idx == -1: return False, "Lote no encontrado."
 
-        # 3. Datos del Lote
         cant_actual = int(_clean_number_str(row_data.get('Cantidad', 0)))
         precio_compra = float(_clean_number_str(row_data.get('Precio_Compra', 0)))
         broker = str(row_data.get('Broker', 'DEFAULT')).upper()
         
-        if cantidad_a_vender > cant_actual:
-            return False, f"Error: Quieres vender {cantidad_a_vender} pero tienes {cant_actual}."
+        if cantidad_a_vender > cant_actual: return False, "Cantidad insuficiente."
 
-        # 4. Cálculos Financieros
-        # Costo Origen (proporcional a lo que vendo)
-        monto_bruto_compra = cantidad_a_vender * precio_compra
+        # --- LÓGICA DE BONOS INTELIGENTE ---
+        divisor = 100 if _es_bono(ticker) else 1
+        
+        monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
 
-        # Ingreso Venta
-        monto_bruto_venta = cantidad_a_vender * precio_venta
+        monto_bruto_venta = (cantidad_a_vender * precio_venta) / divisor
         comision_venta = _calcular_comision_real(broker, monto_bruto_venta)
         ingreso_total_venta = monto_bruto_venta - comision_venta
 
         resultado_neto = ingreso_total_venta - costo_total_origen
 
-        # 5. Escribir en Historial
-        # Orden: Ticker, Fecha_Compra, Precio_Compra, Fecha_Venta, Precio_Venta, Cantidad, Costo, Ingreso, Resultado, Broker, Alertas
-        nueva_fila = [
-            ticker, 
-            fecha_compra_str, 
-            precio_compra, 
-            fecha_venta_str, 
-            precio_venta, 
-            cantidad_a_vender, 
-            costo_total_origen, 
-            ingreso_total_venta, 
-            resultado_neto, 
-            broker,
-            0, 0 # Alertas reseteadas en historial
-        ]
+        nueva_fila = [ticker, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
         ws_hist.append_row(nueva_fila)
 
-        # 6. Actualizar Portafolio
         if cantidad_a_vender == cant_actual:
-            # Venta Total -> Borrar fila
             ws_port.delete_rows(fila_idx)
-            msg = "Venta Total registrada con éxito."
+            msg = "Venta Total OK."
         else:
-            # Venta Parcial -> Actualizar cantidad
             nueva_cantidad = cant_actual - cantidad_a_vender
-            col_cant_idx = -1
-            # Buscar índice de columna Cantidad
+            col_cant = -1
             headers = ws_port.row_values(1)
             for i, h in enumerate(headers):
                 if str(h).strip() == 'Cantidad':
-                    col_cant_idx = i + 1
+                    col_cant = i + 1
                     break
-            
-            if col_cant_idx > 0:
-                ws_port.update_cell(fila_idx, col_cant_idx, nueva_cantidad)
-                msg = f"Venta Parcial registrada. Quedan {nueva_cantidad} nominales."
-            else:
-                return False, "Error crítico: No encuentro columna Cantidad para actualizar."
+            ws_port.update_cell(fila_idx, col_cant, nueva_cantidad)
+            msg = "Venta Parcial OK."
 
-        # Limpiar caché para reflejar cambios
         get_portafolio_df.clear()
-        # get_historial_df.clear() # No tiene caché, pero por si acaso
-
         return True, msg
-
-    except Exception as e:
-        return False, f"Error al escribir: {str(e)}"
+    except Exception as e: return False, f"Error: {str(e)}"
 
 @retry_api_call
 def actualizar_alertas_lote(ticker, fecha_compra_str, alerta_alta, alerta_baja):
-    """Actualiza Stop Loss y Take Profit en la hoja Portafolio."""
     try:
         sh = _get_connection()
         ws = sh.get_worksheet(0)
         data = ws.get_all_records()
-        
         fila_idx = -1
-        
-        # Búsqueda (simplificada sin precio porque la fecha suele bastar)
         for i, d in enumerate(data):
-            t_data = str(d.get('Ticker', '')).upper().strip()
-            f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
-            
-            if t_data == ticker.upper().strip() and f_data == fecha_compra_str.strip()[:10]:
+            if str(d.get('Ticker')).upper().strip() == ticker.upper().strip() and str(d.get('Fecha_Compra')).strip()[:10] == fecha_compra_str.strip()[:10]:
                 fila_idx = i + 2
                 break
-        
         if fila_idx == -1: return False, "Lote no encontrado."
         
-        # Buscar índices de columnas
         headers = ws.row_values(1)
-        col_alta = -1
-        col_baja = -1
-        
+        col_a, col_b = -1, -1
         for i, h in enumerate(headers):
-            h_clean = str(h).strip()
-            if h_clean == 'Alerta_Alta': col_alta = i + 1
-            if h_clean == 'Alerta_Baja': col_baja = i + 1
-            
-        if col_alta > 0: ws.update_cell(fila_idx, col_alta, alerta_alta)
-        if col_baja > 0: ws.update_cell(fila_idx, col_baja, alerta_baja)
+            if str(h).strip() == 'Alerta_Alta': col_a = i + 1
+            if str(h).strip() == 'Alerta_Baja': col_b = i + 1
         
-        get_portafolio_df.clear() # Limpiar caché obligatorio
-        return True, "Alertas guardadas."
-        
-    except Exception as e:
-        return False, f"Error: {e}"
+        if col_a > 0: ws.update_cell(fila_idx, col_a, alerta_alta)
+        if col_b > 0: ws.update_cell(fila_idx, col_b, alerta_baja)
+        get_portafolio_df.clear()
+        return True, "Alertas OK."
+    except Exception as e: return False, f"Error: {e}"
 
-# --- COMPATIBILIDAD ---
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     return df['Ticker'].unique().tolist() if not df.empty else []
