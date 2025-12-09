@@ -4,12 +4,19 @@ from datetime import datetime
 import database
 import market_logic
 import config
-import manager # Importar manager
+import manager 
 
 st.set_page_config(page_title="Portafolio", layout="wide")
 st.title("💰 Tu Portafolio y Señales de Venta")
 
-manager.mostrar_boton_actualizar()
+# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL ---
+# En lugar de usar la función de manager que pone el botón en la sidebar, 
+# ponemos un botón local para actualizar los datos.
+if st.button("🔄 Actualizar Datos de Mercado"):
+    manager.actualizar_todo(silent=False)
+    st.rerun()
+
+# [Lógica anterior] manager.mostrar_boton_actualizar()
 
 # --- ESTILOS ---
 def get_styled_portafolio(df):
@@ -118,8 +125,6 @@ try:
                 precio_compra_orig = float(lote_data['Precio_Compra']) # ID para el backend
 
                 tasa_info = config.COMISIONES.get(broker_origen, "Estándar")
-                if broker_origen == 'VETA': tasa_info = "0.15% + IVA + Der (Min $50)"
-                elif broker_origen == 'COCOS': tasa_info = "0% (Solo derechos)"
                 
                 precio_sugerido = 0.0
                 if ticker_sel in st.session_state.precios_actuales:
@@ -127,7 +132,7 @@ try:
 
                 with st.form("form_venta"):
                     st.markdown("### 3. Detalles de la Operación")
-                    st.info(f"🔒 **Custodia:** {broker_origen} — **Comisión:** {tasa_info}")
+                    st.info(f"🔒 **Custodia:** {broker_origen}")
                     
                     c1, c2, c3 = st.columns(3)
                     with c1: f_venta = st.date_input("Fecha Venta", datetime.now())
