@@ -11,8 +11,7 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
-    # Valores de seguridad si falla config
-    COMISIONES = {'DEFAULT': 0.0045} 
+    # Valores por defecto
     IVA = 1.21
     DERECHOS_MERCADO = 0.0008
     VETA_MINIMO = 50
@@ -40,7 +39,6 @@ def _clean_number_str(val):
     except: return 0.0
 
 def _es_bono(ticker):
-    """Detecta bonos (divisor 100)."""
     if not ticker: return False
     t = str(ticker).strip().upper()
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
@@ -52,26 +50,26 @@ def _es_bono(ticker):
 
 def _calcular_comision_real(broker, monto_bruto):
     """
-    Cálculo UNIFICADO de comisiones.
-    Base 0.45% + IVA + Derechos = ~0.62% Final (Estándar mercado)
+    Cálculo de comisiones con TASAS FIJAS CORRECTAS.
+    Ignora config.py para evitar errores de tasas viejas.
     """
     broker = str(broker).upper().strip()
     
+    # TASAS CORRECTAS (HARDCODED)
+    TASA_VETA = 0.0015   # 0.15%
+    TASA_GRAL = 0.0045   # 0.45% (Cocos, Bull, IOL, Default)
+    
     # 1. CASO VETA
     if broker == 'VETA':
-        tasa_veta = 0.0015 # 0.15% Base
-        comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
+        comision_base = max(VETA_MINIMO, monto_bruto * TASA_VETA)
         costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return costo_total
     
-    # 2. CASO GENERAL (Cocos, Bull, IOL, etc.)
-    # Intenta buscar en config, sino usa 0.0045 (0.45%)
-    tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
+    # 2. CASO GENERAL
+    comision_base = monto_bruto * TASA_GRAL
+    costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
     
-    # Fórmula: (Base * IVA) + Derechos
-    comision_total = (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
-    
-    return comision_total
+    return costo_total
 
 def retry_api_call(func):
     def wrapper(*args, **kwargs):
@@ -232,7 +230,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         # 1. Ajuste por Bonos
         divisor = 100 if _es_bono(ticker) else 1
         
-        # 2. Cálculos (Base 0.45%)
+        # 2. Cálculos (TASAS CORREGIDAS 0.45% / 0.15%)
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
