@@ -8,12 +8,10 @@ import manager
 st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
 st.title("📊 Rendimiento del Portafolio")
 
-# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL (Consistencia con Portafolio) ---
+# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL ---
 if st.button("🔄 Actualizar Datos de Mercado"):
-    # El Dashboard necesita actualizar TODOS los datos (cartera, mep, y visibles)
     manager.actualizar_todo(silent=False) 
     st.rerun()
-# [Lógica anterior] manager.mostrar_boton_actualizar() fue eliminado aquí
 
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:
     st.warning("⚠️ Sin precios. Actualiza.")
@@ -22,7 +20,6 @@ if 'precios_actuales' not in st.session_state or st.session_state.precios_actual
 # --- CARGA DATOS ---
 try:
     df_port = database.get_portafolio_df()
-    # CRÍTICO: La función de Portafolio también usa el botón de actualizar que cargará todo
     df_hist = database.get_historial_df()
 except Exception as e:
     st.error(f"Error BD: {e}")
@@ -57,18 +54,23 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- DIAGNÓSTICO RÁPIDO (Opcional, útil para forzar recargas) ---
-with st.expander("⚙️ Opciones de Datos"):
+# --- DIAGNÓSTICO RÁPIDO (Añade botón de actualizar DB) ---
+with st.expander("⚙️ Opciones de Datos", expanded=False):
     c_op1, c_op2 = st.columns([1, 5])
+    
     with c_op1:
-        if st.button("🔄 Recargar Caché DB"):
+        # Botón para Forzar la Recarga del Caché de DB
+        if st.button("🔄 Recargar DB"):
             st.cache_data.clear()
             st.rerun()
+            
     with c_op2:
         if df_hist.empty:
             st.warning("El historial parece vacío.")
         else:
             st.caption(f"Historial cargado: {len(df_hist)} operaciones procesadas.")
+            st.caption("Usa 'Recargar DB' si editaste Google Sheet manualmente.")
+
 
 # --- GRÁFICOS ---
 if not df_validos.empty:

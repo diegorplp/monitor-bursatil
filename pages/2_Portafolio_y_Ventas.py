@@ -9,11 +9,26 @@ import manager
 st.set_page_config(page_title="Portafolio", layout="wide")
 st.title("💰 Tu Portafolio y Señales de Venta")
 
-# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL (AHORA USA LA FUNCIÓN OPTIMIZADA) ---
-if st.button("🔄 Actualizar Datos de Mercado"):
-    # Llamamos a la función que SÓLO descarga los precios de la cartera
-    manager.actualizar_solo_cartera(silent=False) 
-    st.rerun()
+# --- NUEVO BLOQUE DE MANTENIMIENTO CONSOLIDADO ---
+with st.expander("⚙️ Opciones de Sincronización", expanded=False):
+    c_db, c_mkt, c_msg = st.columns([1, 1, 4])
+    
+    with c_db:
+        # Botón para Forzar la Recarga del Caché de DB
+        if st.button("🔄 Actualizar DB (Excel)"):
+            st.cache_data.clear()
+            st.rerun()
+    
+    with c_mkt:
+        # Botón para Forzar la Actualización de Precios
+        if st.button("⬇️ Actualizar Precios"):
+            manager.actualizar_solo_cartera(silent=False)
+            st.rerun()
+            
+    with c_msg:
+        st.caption("Usa 'Actualizar DB' si editaste Google Sheet manualmente. 'Actualizar Precios' solo trae cotizaciones de tus activos en tenencia.")
+
+# [Lógica anterior] if st.button("🔄 Actualizar Datos de Mercado"): se elimina para usar el expander
 
 # --- ESTILOS ---
 def get_styled_portafolio(df):
