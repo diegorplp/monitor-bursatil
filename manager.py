@@ -17,30 +17,31 @@ def init_session_state():
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
     
-    # Inicialización de estados de los expanders
-    paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
+    # Inicialización de estados de los expanders (solo Lider, Cedears, etc.)
+    paneles_a_revisar = ['Lider', 'Cedears', 'General', 'Bonos']
     for panel in paneles_a_revisar:
         if f'expanded_{panel}' not in st.session_state:
             st.session_state[f'expanded_{panel}'] = False
 
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
-    """Combina tickers de Portafolio + Favoritos + Paneles Abiertos (USADO POR HOME)."""
+    """Combina tickers de Portafolio + Paneles Abiertos (USADO POR HOME)."""
     tickers_a_cargar = set()
     
+    # 1. Cartera (SIEMPRE)
     tickers_a_cargar.update(database.get_tickers_en_cartera())
     
-    paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
+    # 2. Paneles Expandidos
+    paneles_a_revisar = ['Lider', 'Cedears', 'General', 'Bonos']
 
     for panel in paneles_a_revisar:
         is_expanded = st.session_state.get(f'expanded_{panel}', False)
         
         if is_expanded or not st.session_state.init_done:
-            if panel == 'Favoritos':
-                tickers_a_cargar.update(database.get_favoritos())
-            elif panel in config.TICKERS_CONFIG:
+            if panel in config.TICKERS_CONFIG:
                 tickers_a_cargar.update(config.TICKERS_CONFIG[panel])
             
+    # 3. MEP
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     
     return list(tickers_a_cargar)

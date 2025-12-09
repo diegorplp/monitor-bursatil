@@ -317,4 +317,3 @@ def actualizar_alertas_lote(ticker, fecha_compra_str, alerta_alta, alerta_baja):
 def get_tickers_en_cartera():
     df = get_portafolio_df()
     return df['Ticker'].unique().tolist() if not df.empty else []
-def get_favoritos(): return []
