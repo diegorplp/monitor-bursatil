@@ -3,7 +3,6 @@ from datetime import datetime
 import database
 import config
 
-# CORRECCIÓN AQUÍ: page_icon
 st.set_page_config(page_title="Registrar Compra", page_icon="📝")
 
 st.title("📝 Registrar Nueva Compra")
@@ -15,12 +14,17 @@ with st.form("form_compra", clear_on_submit=False):
     
     with col1:
         ticker_input = st.text_input("Ticker (Ej: GGAL)", placeholder="GGAL").strip().upper()
-        if ticker_input and not ticker_input.endswith(".BA") and len(ticker_input) < 10:
-            st.caption(f"Se guardará como: **{ticker_input}.BA**")
+        # Visualmente le avisamos al usuario que se normalizará
+        if ticker_input and "." not in ticker_input and len(ticker_input) < 10:
+            st.caption(f"ℹ️ Se guardará automáticamente como: **{ticker_input}.BA**")
 
     with col2:
         lista_brokers = list(config.COMISIONES.keys())
-        idx_def = lista_brokers.index('IOL') if 'IOL' in lista_brokers else 0
+        # Selección inteligente de broker default
+        idx_def = 0
+        if 'IOL' in lista_brokers: idx_def = lista_brokers.index('IOL')
+        elif 'BULL' in lista_brokers: idx_def = lista_brokers.index('BULL')
+        
         broker_sel = st.selectbox("Broker", lista_brokers, index=idx_def)
 
     st.markdown("---")
@@ -71,7 +75,6 @@ with st.form("form_compra", clear_on_submit=False):
             
             if exito:
                 st.success(f"✅ {msg}")
-                st.session_state.cartera_intentada = False 
-                st.info("Pestaña 'Portafolio' mostrará el nuevo activo tras actualizar datos.")
+                st.info("Ve a la pestaña 'Portafolio' para ver tu nueva posición.")
             else:
                 st.error(f"❌ Error: {msg}")
