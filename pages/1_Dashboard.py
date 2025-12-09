@@ -8,7 +8,12 @@ import manager
 st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
 st.title("📊 Rendimiento del Portafolio")
 
-manager.mostrar_boton_actualizar()
+# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL (Consistencia con Portafolio) ---
+if st.button("🔄 Actualizar Datos de Mercado"):
+    # El Dashboard necesita actualizar TODOS los datos (cartera, mep, y visibles)
+    manager.actualizar_todo(silent=False) 
+    st.rerun()
+# [Lógica anterior] manager.mostrar_boton_actualizar() fue eliminado aquí
 
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:
     st.warning("⚠️ Sin precios. Actualiza.")
@@ -17,6 +22,7 @@ if 'precios_actuales' not in st.session_state or st.session_state.precios_actual
 # --- CARGA DATOS ---
 try:
     df_port = database.get_portafolio_df()
+    # CRÍTICO: La función de Portafolio también usa el botón de actualizar que cargará todo
     df_hist = database.get_historial_df()
 except Exception as e:
     st.error(f"Error BD: {e}")
@@ -55,7 +61,7 @@ st.divider()
 with st.expander("⚙️ Opciones de Datos"):
     c_op1, c_op2 = st.columns([1, 5])
     with c_op1:
-        if st.button("🔄 Recargar Datos"):
+        if st.button("🔄 Recargar Caché DB"):
             st.cache_data.clear()
             st.rerun()
     with c_op2:

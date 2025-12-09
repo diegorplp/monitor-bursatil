@@ -17,7 +17,7 @@ def init_session_state():
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
     
-    # Inicialización de estados de los expanders (para lazy loading en Home)
+    # Inicialización de estados de los expanders
     paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
     for panel in paneles_a_revisar:
         if f'expanded_{panel}' not in st.session_state:
@@ -28,10 +28,8 @@ def get_tickers_a_cargar() -> List[str]:
     """Combina tickers de Portafolio + Favoritos + Paneles Abiertos (USADO POR HOME)."""
     tickers_a_cargar = set()
     
-    # 1. Cartera (SIEMPRE se cargan sus precios)
     tickers_a_cargar.update(database.get_tickers_en_cartera())
     
-    # 2. Favoritos y Paneles Expandidos
     paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
 
     for panel in paneles_a_revisar:
@@ -43,7 +41,6 @@ def get_tickers_a_cargar() -> List[str]:
             elif panel in config.TICKERS_CONFIG:
                 tickers_a_cargar.update(config.TICKERS_CONFIG[panel])
             
-    # 3. MEP
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     
     return list(tickers_a_cargar)
@@ -52,7 +49,6 @@ def get_tickers_a_cargar() -> List[str]:
 def update_data(lista_tickers, nombre_panel, silent=False):
     if not lista_tickers: return
 
-    # Implementación del spinner simplificada para evitar errores
     if not silent:
         with st.spinner(f"Cargando {nombre_panel}..."):
             df_nuevo_raw = data_client.get_data(lista_tickers)
@@ -61,7 +57,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
                 st.warning(f"⚠️ No se encontraron datos para {nombre_panel}.")
                 return
             
-            # Continuar procesamiento
             mep, var = market_logic.calcular_mep(df_nuevo_raw)
             if mep:
                 st.session_state.mep_valor = mep
@@ -75,13 +70,11 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             
             if df_nuevo_screener.empty: return
             
-            # Fusión
             if 'Precio' in df_nuevo_screener.columns:
                 nuevos = df_nuevo_screener['Precio']
                 st.session_state.precios_actuales.update(nuevos)
                 st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(nuevos)
             
-            # Solo actualiza los datos existentes sin recargar todo el df oportunidades
             if not st.session_state.oportunidades.empty:
                 df_total = pd.concat([st.session_state.oportunidades.drop(df_nuevo_screener.index, errors='ignore'), df_nuevo_screener])
                 df_total = df_total[~df_total.index.duplicated(keep='last')]
@@ -133,12 +126,11 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
 # --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_solo_cartera(silent=False):
-    """NUEVA FUNCIÓN: Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
+    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
     init_session_state()
     
     t_cartera = database.get_tickers_en_cartera()
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
-    
     t_a_cargar = list(set(t_cartera + t_mep))
     
     if not t_a_cargar:
@@ -149,7 +141,7 @@ def actualizar_solo_cartera(silent=False):
 
 
 def actualizar_todo(silent=False):
-    """Función para HOME (Actualiza todo lo visible)."""
+    """Función para HOME y DASHBOARD (Actualiza todo lo visible)."""
     init_session_state()
     
     t_a_cargar = get_tickers_a_cargar()
@@ -161,12 +153,14 @@ def actualizar_todo(silent=False):
     update_data(t_a_cargar, "Mercado Global", silent=silent)
 
 
-# --- WIDGET DE SIDEBAR ---
+# --- WIDGET DE SIDEBAR (BOTÓN GLOBAL) ---
 def mostrar_boton_actualizar():
+    """Vuelve a renderizar el botón de la sidebar (solo para Home)."""
     init_session_state()
     st.sidebar.markdown("---")
     st.sidebar.subheader("📡 Datos de Mercado")
     
+    # Este botón llama a la función actualizar_todo
     if st.sidebar.button("🔄 Actualizar Todo", use_container_width=True):
         st.session_state.init_done = False
         st.rerun()
