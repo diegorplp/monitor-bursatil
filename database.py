@@ -104,7 +104,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Con Caché) ---
+# --- LECTURA PORTAFOLIO (Con Caché - NORMALIZACIÓN AÑADIDA) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -115,8 +115,31 @@ def get_portafolio_df():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         
+        # --- CRÍTICO: NORMALIZACIÓN DE TICKERS ---
         if 'Ticker' in df.columns:
-            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
+            def normalize_ticker(t):
+                t_raw = str(t).strip().upper()
+                if not t_raw: return None
+                
+                # Regla 1: Si ya tiene .BA (o .C), es correcto.
+                if '.' in t_raw:
+                    return t_raw
+                
+                # Regla 2: Excepciones (activos que cotizan sin sufijo en Yahoo/IOL, si los hubiera)
+                if len(t_raw) < 5 and not t_raw.endswith('.BA'): # Cederars suelen tener 4 letras
+                    pass # Dejamos la normalización al manager para no romper tickers internacionales
+
+                # Regla 3: Si es Argentino y no tiene sufijo, lo agregamos.
+                # Asumo que cualquier ticker corto de la cartera es local (Ej: GGAL, AL30)
+                if len(t_raw) < 9 and not t_raw.endswith('.BA'):
+                    return f"{t_raw}.BA"
+                
+                return t_raw # Devuelve la versión cruda si no aplica ninguna regla
+
+            # Aplicar la normalización
+            df['Ticker'] = df['Ticker'].apply(normalize_ticker)
+            df = df.dropna(subset=['Ticker'])
+            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip()) # Limpieza final
         
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
