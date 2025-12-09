@@ -9,15 +9,14 @@ import manager
 st.set_page_config(page_title="Portafolio", layout="wide")
 st.title("💰 Tu Portafolio y Señales de Venta")
 
-# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL ---
-# En lugar de usar la función de manager que pone el botón en la sidebar.
+# --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL (AHORA USA LA FUNCIÓN OPTIMIZADA) ---
 if st.button("🔄 Actualizar Datos de Mercado"):
-    manager.actualizar_todo(silent=False)
+    # Llamamos a la función que SÓLO descarga los precios de la cartera
+    manager.actualizar_solo_cartera(silent=False) 
     st.rerun()
 
 # --- ESTILOS ---
 def get_styled_portafolio(df):
-    # ... (código estilos) ...
     if df.empty: return df
     
     def highlight_row(row):
