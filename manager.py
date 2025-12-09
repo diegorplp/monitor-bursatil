@@ -108,16 +108,14 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 def actualizar_panel_individual(nombre_panel, lista_tickers):
     """NUEVA FUNCIÓN: Actualiza un solo panel (Lider, Bonos, etc.)"""
     init_session_state()
-    # Los tickers a cargar son los del panel + los de MEP (para que el cálculo se haga bien)
+    
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
-    t_a_cargar = list(set(lista_tickers + t_mep))
-    
-    # La lista de tickers para la descarga DEBE contener la cartera completa también
-    # para que los precios de la cartera no desaparezcan de st.session_state.precios_actuales
     t_cartera = database.get_tickers_en_cartera()
-    t_total_para_descarga = list(set(t_a_cargar + t_cartera))
     
-    update_data(t_total_para_descarga, nombre_panel, silent=False)
+    # La descarga incluye el panel solicitado + cartera + MEP
+    t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
+    
+    update_data(t_a_cargar, nombre_panel, silent=False)
 
 
 def actualizar_solo_cartera(silent=False):

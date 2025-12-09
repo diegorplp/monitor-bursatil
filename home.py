@@ -18,6 +18,7 @@ if AUTO_REFRESH_DISPONIBLE:
     st_autorefresh(interval=60 * 1000, key="market_refresh")
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
+# La carga inicial ahora solo pide Portafolio + MEP
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
     manager.actualizar_todo(silent=True)
     st.session_state.init_done = True
@@ -69,13 +70,13 @@ iconos = {'Lider': '🏆', 'Cedears': '🌎', 'General': '📊', 'Bonos': 'b'}
 
 for p in paneles:
     if p in config.TICKERS_CONFIG:
-        # Ya no hay control de estado de expandido
-        with st.expander(f"{iconos.get(p, '')} {p}", expanded=False, key=f"exp_{p}"):
+        # Se elimina el control de estado y el key para máxima estabilidad
+        with st.expander(f"{iconos.get(p, '')} {p}", expanded=False):
             
             # El botón de carga ahora es la ÚNICA forma de cargar ese panel
             if st.button(f"Cargar {p}", key=f"btn_{p}"):
-                # La lógica de manager.py debe asegurar que solo se cargue ese panel
-                manager.actualizar_panel_individual(p, config.TICKERS_CONFIG[p]) # Creamos una función simple en manager
+                # Llama a la función que descarga ese panel y vuelve
+                manager.actualizar_panel_individual(p, config.TICKERS_CONFIG[p])
                 st.rerun()
             
             # Renderizado Condicional
