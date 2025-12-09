@@ -10,6 +10,7 @@ from typing import List
 
 # --- INICIALIZACIÓN DE ESTADO ---
 def init_session_state():
+    # Inicialización estándar
     if 'oportunidades' not in st.session_state: st.session_state.oportunidades = pd.DataFrame()
     if 'precios_actuales' not in st.session_state: st.session_state.precios_actuales = pd.Series(dtype=float)
     if 'mep_valor' not in st.session_state: st.session_state.mep_valor = None
@@ -17,25 +18,28 @@ def init_session_state():
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
     
+    # CRÍTICO: Inicialización de estados de los expanders (para Lazy Loading)
+    paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
+    for panel in paneles_a_revisar:
+        if f'expanded_{panel}' not in st.session_state:
+            st.session_state[f'expanded_{panel}'] = False # Por defecto, cerrados
+
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
-    """
-    Combina tickers de Portafolio + Favoritos + Paneles Abiertos.
-    """
+    """Combina tickers de Portafolio + Favoritos + Paneles Abiertos."""
     tickers_a_cargar = set()
     
     # 1. Cartera (SIEMPRE se cargan sus precios)
     tickers_a_cargar.update(database.get_tickers_en_cartera())
     
-    # 2. Favoritos y Paneles Expandidos (Lazy Loading)
+    # 2. Favoritos y Paneles Expandidos
     paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
 
     for panel in paneles_a_revisar:
-        # Revisa si la Session State guardó que debe estar abierto
+        # Si el panel está marcado como expandido O es la carga inicial
         is_expanded = st.session_state.get(f'expanded_{panel}', False)
         
         if is_expanded or not st.session_state.init_done:
-             # Favoritos se maneja aparte por database
             if panel == 'Favoritos':
                 tickers_a_cargar.update(database.get_favoritos())
             elif panel in config.TICKERS_CONFIG:
@@ -56,24 +60,23 @@ def update_data(lista_tickers, nombre_panel, silent=False):
     start_time = time.time()
 
     with contexto:
-        # 1. Descarga de datos
         df_nuevo_raw = data_client.get_data(lista_tickers)
         
         if time.time() - start_time > 30 and df_nuevo_raw.empty:
-             if not silent: status_placeholder.error(f"❌ Error de Conexión: La descarga tardó mucho o falló.")
+             if not silent: status_placeholder.error(f"❌ Error de Conexión: Descarga falló.")
              return
 
         if df_nuevo_raw.empty:
             if not silent: status_placeholder.warning(f"⚠️ No se encontraron datos.")
             return
 
-        # 2. MEP
+        # MEP
         mep, var = market_logic.calcular_mep(df_nuevo_raw)
         if mep:
             st.session_state.mep_valor = mep
             st.session_state.mep_var = var
 
-        # 3. Indicadores
+        # Indicadores
         try:
             df_nuevo_screener = market_logic.calcular_indicadores(df_nuevo_raw)
         except Exception as e:
@@ -82,7 +85,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
         if df_nuevo_screener.empty: return
 
-        # 4. Fusión
+        # Fusión
         if 'Precio' in df_nuevo_screener.columns:
             nuevos = df_nuevo_screener['Precio']
             st.session_state.precios_actuales.update(nuevos)
@@ -122,14 +125,14 @@ def actualizar_todo(silent=False):
 # --- WIDGET DE SIDEBAR ---
 def mostrar_boton_actualizar():
     init_session_state()
-
+    
     st.sidebar.markdown("---")
     st.sidebar.subheader("📡 Datos de Mercado")
     
     if st.sidebar.button("🔄 Actualizar Todo", use_container_width=True):
         st.session_state.init_done = False
         st.rerun()
-
+        
     if st.session_state.last_update:
         st.sidebar.caption(f"Última act: {st.session_state.last_update.strftime('%H:%M:%S')}")
         
