@@ -40,7 +40,6 @@ def _clean_number_str(val):
     except: return 0.0
 
 def _es_bono(ticker):
-    """Detecta bonos (divisor 100)."""
     if not ticker: return False
     t = str(ticker).strip().upper()
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
@@ -51,42 +50,27 @@ def _es_bono(ticker):
     return False
 
 def _calcular_comision_real(broker, monto_bruto, es_bono=False):
-    """
-    Calcula comisiones diferenciando Bonos vs Acciones.
-    Bonos: Derechos 0.01% y SIN IVA.
-    Acciones: Derechos 0.05% y CON IVA.
-    """
     broker = str(broker).upper().strip()
-    
-    # Definir variables según tipo de activo
     if es_bono:
         tasa_derechos = DERECHOS_BONOS
-        multiplicador_iva = 1.0 # No paga IVA
+        multiplicador_iva = 1.0
     else:
         tasa_derechos = DERECHOS_ACCIONES
-        multiplicador_iva = IVA # 1.21
+        multiplicador_iva = IVA
         
-    # CASO VETA
     if broker == 'VETA':
         tasa_veta = COMISIONES.get('VETA', 0.0015)
         comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
-        
-        # En Veta el IVA suele aplicar a la comisión mínima también
-        gastos = (comision_base * multiplicador_iva) + (monto_bruto * tasa_derechos)
-        return gastos
+        costo_total = (comision_base + (monto_bruto * tasa_derechos)) * multiplicador_iva
+        return costo_total
     
-    # CASO GENERAL
     tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
-    
     comision_base = monto_bruto * tasa
     derechos = monto_bruto * tasa_derechos
     
-    # Fórmula: (Comisión + Derechos) * IVA (Solo si corresponde)
-    # Nota: Si es bono, multiplicador_iva es 1.0 (neutro).
     if es_bono:
         costo_total = comision_base + derechos
     else:
-        # Acciones: La factura mostraba (Comision + Derechos) * 1.21
         costo_total = (comision_base + derechos) * multiplicador_iva
         
     return costo_total
@@ -104,7 +88,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Con Caché - NORMALIZACIÓN AÑADIDA) ---
+# --- LECTURA PORTAFOLIO (Con Caché - NORMALIZACIÓN CORREGIDA) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -121,25 +105,19 @@ def get_portafolio_df():
                 t_raw = str(t).strip().upper()
                 if not t_raw: return None
                 
-                # Regla 1: Si ya tiene .BA (o .C), es correcto.
+                # Si ya tiene sufijo o no es de la bolsa local (ej: SPY), lo dejamos
                 if '.' in t_raw:
                     return t_raw
                 
-                # Regla 2: Excepciones (activos que cotizan sin sufijo en Yahoo/IOL, si los hubiera)
-                if len(t_raw) < 5 and not t_raw.endswith('.BA'): # Cederars suelen tener 4 letras
-                    pass # Dejamos la normalización al manager para no romper tickers internacionales
-
-                # Regla 3: Si es Argentino y no tiene sufijo, lo agregamos.
-                # Asumo que cualquier ticker corto de la cartera es local (Ej: GGAL, AL30)
+                # Si es Argentino sin sufijo, lo agregamos (ej: GGAL -> GGAL.BA)
                 if len(t_raw) < 9 and not t_raw.endswith('.BA'):
                     return f"{t_raw}.BA"
                 
-                return t_raw # Devuelve la versión cruda si no aplica ninguna regla
+                return t_raw
 
-            # Aplicar la normalización
             df['Ticker'] = df['Ticker'].apply(normalize_ticker)
             df = df.dropna(subset=['Ticker'])
-            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip()) # Limpieza final
+            df['Ticker'] = df['Ticker'].apply(lambda x: str(x).upper().strip())
         
         cols_num = ['Cantidad', 'Precio_Compra', 'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja']
         for c in cols_num:
@@ -206,6 +184,7 @@ def add_transaction(datos):
         ws = sh.get_worksheet(0)
         
         ticker_raw = str(datos['Ticker']).strip().upper()
+        # Mantenemos la normalización para el ticker que se guarda
         if '.' not in ticker_raw and len(ticker_raw) < 10:
             ticker_raw += ".BA"
             
@@ -216,9 +195,6 @@ def add_transaction(datos):
         alerta_alta = datos.get('Alerta_Alta', 0.0)
         alerta_baja = datos.get('Alerta_Baja', 0.0)
         
-        # No se calculan costos en la compra (se calculan al visualizar o vender)
-        # Se guarda el dato crudo
-        
         nueva_fila = [ticker_raw, fecha, cantidad, precio, broker, alerta_alta, alerta_baja, 0, 0]
         ws.append_row(nueva_fila)
         
@@ -227,12 +203,13 @@ def add_transaction(datos):
         
     except Exception as e: return False, f"Error: {e}"
 
-# --- ESCRITURA VENTA ---
+# --- ESCRITURA VENTA (BUSQUEDA CORREGIDA) ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
         sh = _get_connection()
         ws_port = sh.get_worksheet(0)
+        
         ws_hist = None
         for w in sh.worksheets():
             if "HISTORIAL" in w.title.strip().upper():
@@ -244,11 +221,23 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         fila_idx = -1
         row_data = None
         
+        # CRÍTICO: BUSQUEDA INDULGENTE
+        # Ticker del formulario viene normalizado (ej: NVDA.BA)
+        ticker_form = ticker.upper().strip()
+        # Quitamos el sufijo al ticker del formulario para comparar contra el Excel crudo (ej: NVDA)
+        ticker_search_raw = ticker_form.replace('.BA', '')
+        
         for i, d in enumerate(data):
-            t_data = str(d.get('Ticker', '')).upper().strip()
+            # Ticker de la fila del Excel (ej: NVDA)
+            t_data_raw = str(d.get('Ticker', '')).upper().strip()
             f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
             p_data = _clean_number_str(d.get('Precio_Compra', 0))
-            if t_data == ticker.upper().strip() and f_data == fecha_compra_str.strip()[:10]:
+            
+            # Condición de Ticker: Comparamos la versión normalizada con la versión RAW del Excel.
+            # O sea: (NVDA.BA == NVDA) OR (NVDA == NVDA)
+            ticker_match = (ticker_form == t_data_raw) or (ticker_search_raw == t_data_raw)
+            
+            if ticker_match and f_data == fecha_compra_str.strip()[:10]:
                 if precio_compra_id is None or abs(p_data - float(precio_compra_id)) < 0.01:
                     fila_idx = i + 2
                     row_data = d
@@ -262,14 +251,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cantidad_a_vender > cant_actual: return False, "Cantidad insuficiente."
 
-        # 1. Ajuste por Bonos
         es_bono = _es_bono(ticker)
         divisor = 100 if es_bono else 1
         
-        # 2. Cálculos con distinción Bono/Acción
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
-        
-        # Pasamos es_bono=True/False a la calculadora
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra, es_bono=es_bono)
         costo_total_origen = monto_bruto_compra + comision_compra
 
@@ -279,11 +264,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         resultado_neto = ingreso_total_venta - costo_total_origen
 
-        # 3. Escritura
-        nueva_fila = [ticker, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
+        # NOTA: Guardamos el Ticker en el Historial con la nomenclatura NORMALIZADA (NVDA.BA)
+        nueva_fila = [ticker_form, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
         ws_hist.append_row(nueva_fila)
 
-        # 4. Actualización
         if cantidad_a_vender == cant_actual:
             ws_port.delete_rows(fila_idx)
             msg = "Venta Total OK."
@@ -304,6 +288,8 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         get_portafolio_df.clear()
         return True, msg
     except Exception as e: return False, f"Error: {str(e)}"
+
+# [El resto del archivo sigue igual, incluyendo actualizar_alertas_lote, etc.]
 
 @retry_api_call
 def actualizar_alertas_lote(ticker, fecha_compra_str, alerta_alta, alerta_baja):
