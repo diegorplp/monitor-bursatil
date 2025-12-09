@@ -18,7 +18,6 @@ if AUTO_REFRESH_DISPONIBLE:
     st_autorefresh(interval=60 * 1000, key="market_refresh")
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
-# La carga inicial ahora solo pide Portafolio + MEP
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
     manager.actualizar_todo(silent=True)
     st.session_state.init_done = True
@@ -57,7 +56,11 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
         manager.actualizar_todo(silent=False)
         st.rerun()
     
-    df_cartera = st.session_state.oportunidades[st.session_state.oportunidades.index.isin(mis_tickers)]
+    # Renderizado: Filtra por los tickers que están en cartera y que además tienen data
+    df_cartera = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(mis_tickers)]
+    # Eliminar las filas que no tienen datos (RSI=0 y Precio=0)
+    df_cartera = df_cartera[df_cartera['Precio'] > 0]
+    
     if not df_cartera.empty:
         st.dataframe(get_styled_screener(df_cartera), use_container_width=True)
     elif len(mis_tickers) > 0: st.caption("Esperando datos de mercado...")
@@ -80,7 +83,10 @@ for p in paneles:
                 st.rerun()
             
             # Renderizado Condicional
-            df_show = st.session_state.oportunidades[st.session_state.oportunidades.index.isin(config.TICKERS_CONFIG[p])]
+            df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(config.TICKERS_CONFIG[p])]
+            # Eliminamos las filas que no tienen datos (solo mostramos lo que se cargó)
+            df_show = df_show[df_show['Precio'] > 0]
+            
             if not df_show.empty:
                 st.dataframe(get_styled_screener(df_show), use_container_width=True)
             else:

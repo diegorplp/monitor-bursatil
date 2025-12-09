@@ -10,7 +10,16 @@ from typing import List
 
 # --- INICIALIZACIÓN DE ESTADO ---
 def init_session_state():
-    if 'oportunidades' not in st.session_state: st.session_state.oportunidades = pd.DataFrame()
+    # Inicialización de df_oportunidades con TODOS los tickers posibles, pero sin datos.
+    if 'oportunidades' not in st.session_state:
+        # Crea un DataFrame vacío con todos los Tickers como índice
+        df_base = pd.DataFrame(index=config.TICKERS)
+        # Añade las columnas necesarias para evitar errores de cálculo
+        df_base['Precio'] = 0.0
+        df_base['RSI'] = 0.0
+        df_base['Senal'] = 'PENDIENTE'
+        st.session_state.oportunidades = df_base
+        
     if 'precios_actuales' not in st.session_state: st.session_state.precios_actuales = pd.Series(dtype=float)
     if 'mep_valor' not in st.session_state: st.session_state.mep_valor = None
     if 'mep_var' not in st.session_state: st.session_state.mep_var = None
@@ -50,27 +59,33 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             
             if df_nuevo_screener.empty: return
             
+            # Fusión
             if 'Precio' in df_nuevo_screener.columns:
                 nuevos = df_nuevo_screener['Precio']
                 st.session_state.precios_actuales.update(nuevos)
                 st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(nuevos)
             
-            if not st.session_state.oportunidades.empty:
-                df_total = pd.concat([st.session_state.oportunidades.drop(df_nuevo_screener.index, errors='ignore'), df_nuevo_screener])
-                df_total = df_total[~df_total.index.duplicated(keep='last')]
-            else:
-                df_total = df_nuevo_screener
-
+            # CRÍTICO: El merge ahora se hace contra el df de oportunidades, el cual contiene TODOS los tickers
+            df_total = st.session_state.oportunidades.copy()
+            
+            # 1. Actualizar las filas del screener
+            for idx in df_nuevo_screener.index:
+                if idx in df_total.index:
+                    df_total.loc[idx] = df_nuevo_screener.loc[idx]
+                
+            # 2. Ordenar
             if not df_total.empty:
                 cols_sort = ['Senal', 'Suma_Caidas']
+                # Se necesita manejar la posibilidad de que Suma_Caidas sea NaN (si el ticker no se cargó)
                 if all(c in df_total.columns for c in cols_sort):
-                    df_total.sort_values(by=cols_sort, ascending=[True, False], inplace=True)
+                    # Sortear poniendo los NaN al final
+                    df_total.sort_values(by=cols_sort, ascending=[True, False], na_position='last', inplace=True)
 
             st.session_state.oportunidades = df_total
             st.session_state.last_update = datetime.now()
             st.success(f"✅ Datos actualizados.")
             
-    else: # Si silent=True, procesa sin spinner (auto-refresh)
+    else: # Si silent=True, procesa sin spinner
         df_nuevo_raw = data_client.get_data(lista_tickers)
         if df_nuevo_raw.empty: return
 
@@ -90,23 +105,23 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             st.session_state.precios_actuales.update(nuevos)
             st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(nuevos)
         
-        if not st.session_state.oportunidades.empty:
-            df_total = pd.concat([st.session_state.oportunidades.drop(df_nuevo_screener.index, errors='ignore'), df_nuevo_screener])
-            df_total = df_total[~df_total.index.duplicated(keep='last')]
-        else:
-            df_total = df_nuevo_screener
-
+        # Fusión silenciosa
+        df_total = st.session_state.oportunidades.copy()
+        for idx in df_nuevo_screener.index:
+             if idx in df_total.index:
+                 df_total.loc[idx] = df_nuevo_screener.loc[idx]
+        
         if not df_total.empty:
             cols_sort = ['Senal', 'Suma_Caidas']
             if all(c in df_total.columns for c in cols_sort):
-                df_total.sort_values(by=cols_sort, ascending=[True, False], inplace=True)
+                df_total.sort_values(by=cols_sort, ascending=[True, False], na_position='last', inplace=True)
 
         st.session_state.oportunidades = df_total
         st.session_state.last_update = datetime.now()
 
 # --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
-    """NUEVA FUNCIÓN: Actualiza un solo panel (Lider, Bonos, etc.)"""
+    """Actualiza un solo panel (Lider, Bonos, etc.)"""
     init_session_state()
     
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
@@ -116,6 +131,8 @@ def actualizar_panel_individual(nombre_panel, lista_tickers):
     t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
     
     update_data(t_a_cargar, nombre_panel, silent=False)
+
+# ... [resto de manager.py idéntico] ...
 
 
 def actualizar_solo_cartera(silent=False):
