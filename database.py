@@ -11,6 +11,7 @@ try:
 except ImportError:
     SHEET_NAME, CREDENTIALS_FILE = "", ""
     USE_CLOUD_AUTH, GOOGLE_CREDENTIALS_DICT = False, {}
+    # Valores de seguridad si falla config
     COMISIONES = {'DEFAULT': 0.0045} 
     IVA = 1.21
     DERECHOS_MERCADO = 0.0008
@@ -39,6 +40,7 @@ def _clean_number_str(val):
     except: return 0.0
 
 def _es_bono(ticker):
+    """Detecta bonos (divisor 100)."""
     if not ticker: return False
     t = str(ticker).strip().upper()
     bonos_letras = ['DICP', 'PARP', 'CUAP', 'DICY', 'PARY', 'TO26', 'PR13', 'CER']
@@ -49,15 +51,26 @@ def _es_bono(ticker):
     return False
 
 def _calcular_comision_real(broker, monto_bruto):
+    """
+    Cálculo UNIFICADO de comisiones.
+    Base 0.45% + IVA + Derechos = ~0.62% Final (Estándar mercado)
+    """
     broker = str(broker).upper().strip()
+    
+    # 1. CASO VETA
     if broker == 'VETA':
-        tasa_veta = 0.0015 
+        tasa_veta = 0.0015 # 0.15% Base
         comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
         costo_total = (comision_base * IVA) + (monto_bruto * DERECHOS_MERCADO)
         return costo_total
     
+    # 2. CASO GENERAL (Cocos, Bull, IOL, etc.)
+    # Intenta buscar en config, sino usa 0.0045 (0.45%)
     tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
+    
+    # Fórmula: (Base * IVA) + Derechos
     comision_total = (monto_bruto * tasa * IVA) + (monto_bruto * DERECHOS_MERCADO)
+    
     return comision_total
 
 def retry_api_call(func):
@@ -104,10 +117,13 @@ def get_historial_df():
         sh = _get_connection()
         worksheets = sh.worksheets()
         target_ws = None
+        
+        # Búsqueda Inmune
         for ws in worksheets:
             if "HISTORIAL" in ws.title.strip().upper():
                 target_ws = ws
                 break
+        
         if not target_ws:
             for ws in worksheets:
                 try:
@@ -117,10 +133,12 @@ def get_historial_df():
                         target_ws = ws
                         break
                 except: continue
+
         if not target_ws: return pd.DataFrame()
 
         data = target_ws.get_all_records()
         if not data: return pd.DataFrame()
+        
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_") for c in df.columns]
         
@@ -130,33 +148,32 @@ def get_historial_df():
             if "RESULTADO" in cu and "NETO" in cu: col_map[c] = 'Resultado_Neto'
             elif "GANANCIA" in cu and "REALIZADA" in cu: col_map[c] = 'Resultado_Neto'
             elif cu == "P&L": col_map[c] = 'Resultado_Neto'
+        
         if col_map: df.rename(columns=col_map, inplace=True)
 
         cols_num = ['Resultado_Neto', 'Precio_Compra', 'Precio_Venta', 'Cantidad', 
                     'Alerta_Alta', 'Alerta_Baja', 'CoolDown_Alta', 'CoolDown_Baja',
                     'Costo_Total_Origen', 'Ingreso_Total_Venta']
+        
         for c in cols_num:
             if c in df.columns:
                 df[c] = df[c].apply(_clean_number_str)
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+
         return df
+
     except Exception as e:
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
-# --- ESCRITURA TRANSACCIÓN (COMPRA) ---
+# --- ESCRITURA DE COMPRA ---
 @retry_api_call
 def add_transaction(datos):
-    """
-    Agrega una compra a la hoja Portafolio (Índice 0).
-    Normaliza el Ticker a .BA si corresponde.
-    """
     try:
         sh = _get_connection()
         ws = sh.get_worksheet(0)
         
         ticker_raw = str(datos['Ticker']).strip().upper()
-        # SOLUCIÓN BUG TICKERS: Si no tiene punto y no es algo raro, agregar .BA
         if '.' not in ticker_raw and len(ticker_raw) < 10:
             ticker_raw += ".BA"
             
@@ -167,35 +184,21 @@ def add_transaction(datos):
         alerta_alta = datos.get('Alerta_Alta', 0.0)
         alerta_baja = datos.get('Alerta_Baja', 0.0)
         
-        # Estructura: Ticker, Fecha_Compra, Cantidad, Precio_Compra, Broker, Alerta_Alta, Alerta_Baja, CoolDown_Alta, CoolDown_Baja
-        nueva_fila = [
-            ticker_raw,
-            fecha,
-            cantidad,
-            precio,
-            broker,
-            alerta_alta,
-            alerta_baja,
-            0, # CoolDown_Alta
-            0  # CoolDown_Baja
-        ]
-        
+        nueva_fila = [ticker_raw, fecha, cantidad, precio, broker, alerta_alta, alerta_baja, 0, 0]
         ws.append_row(nueva_fila)
         
-        # Limpiar caché para que aparezca en el portafolio
         get_portafolio_df.clear()
-        
         return True, f"Compra de {ticker_raw} guardada correctamente."
         
-    except Exception as e:
-        return False, f"Error guardando compra: {e}"
+    except Exception as e: return False, f"Error: {e}"
 
-# --- ESCRITURA VENTA ---
+# --- ESCRITURA DE VENTAS ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
         sh = _get_connection()
         ws_port = sh.get_worksheet(0)
+        
         ws_hist = None
         for w in sh.worksheets():
             if "HISTORIAL" in w.title.strip().upper():
@@ -211,6 +214,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
             t_data = str(d.get('Ticker', '')).upper().strip()
             f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
             p_data = _clean_number_str(d.get('Precio_Compra', 0))
+            
             if t_data == ticker.upper().strip() and f_data == fecha_compra_str.strip()[:10]:
                 if precio_compra_id is None or abs(p_data - float(precio_compra_id)) < 0.01:
                     fila_idx = i + 2
@@ -225,8 +229,10 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         
         if cantidad_a_vender > cant_actual: return False, "Cantidad insuficiente."
 
+        # 1. Ajuste por Bonos
         divisor = 100 if _es_bono(ticker) else 1
         
+        # 2. Cálculos (Base 0.45%)
         monto_bruto_compra = (cantidad_a_vender * precio_compra) / divisor
         comision_compra = _calcular_comision_real(broker, monto_bruto_compra)
         costo_total_origen = monto_bruto_compra + comision_compra
@@ -237,9 +243,11 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         resultado_neto = ingreso_total_venta - costo_total_origen
 
+        # 3. Escritura
         nueva_fila = [ticker, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
         ws_hist.append_row(nueva_fila)
 
+        # 4. Actualización Portafolio
         if cantidad_a_vender == cant_actual:
             ws_port.delete_rows(fila_idx)
             msg = "Venta Total OK."

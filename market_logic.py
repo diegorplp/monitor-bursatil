@@ -15,22 +15,21 @@ def _es_bono(ticker):
         if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES (CORREGIDO BASE 0.45%) ---
+# --- CÁLCULO DE COMISIONES (Base 0.45%) ---
 def calcular_comision_real(monto_bruto, broker):
     broker = str(broker).upper().strip()
     iva = config.IVA
     derechos = config.DERECHOS_MERCADO
     veta_min = config.VETA_MINIMO
     
-    # 1. CASO VETA (Base 0.15%)
+    # 1. CASO VETA
     if broker == 'VETA':
         TASA_VETA = 0.0015
         comision_base = max(veta_min, monto_bruto * TASA_VETA)
         gastos = (comision_base * iva) + (monto_bruto * derechos)
         return gastos
     
-    # 2. LÓGICA GENERAL (Base 0.45% para Cocos, Bull, IOL, etc.)
-    # Si config.py tiene un valor específico, lo usa. Si no, usa 0.0045.
+    # 2. LÓGICA GENERAL
     tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
     
     # Fórmula estándar: (Base * IVA) + Derechos
