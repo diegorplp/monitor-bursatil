@@ -5,30 +5,43 @@ import data_client
 import market_logic
 import database
 import config
-import time # Importamos time
+import time
 from typing import List
 
 # --- INICIALIZACIÓN DE ESTADO ---
 def init_session_state():
     if 'oportunidades' not in st.session_state: st.session_state.oportunidades = pd.DataFrame()
     if 'precios_actuales' not in st.session_state: st.session_state.precios_actuales = pd.Series(dtype=float)
-    if 'paneles_expandidos' not in st.session_state: st.session_state.paneles_expandidos = ['Cartera']
     if 'mep_valor' not in st.session_state: st.session_state.mep_valor = None
     if 'mep_var' not in st.session_state: st.session_state.mep_var = None
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
-
+    
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
+    """
+    Combina tickers de Portafolio + Favoritos + Paneles Abiertos.
+    """
     tickers_a_cargar = set()
+    
+    # 1. Cartera (SIEMPRE se cargan sus precios)
     tickers_a_cargar.update(database.get_tickers_en_cartera())
-    if 'Favoritos' in st.session_state.paneles_expandidos or not st.session_state.init_done:
-        tickers_a_cargar.update(database.get_favoritos())
+    
+    # 2. Favoritos y Paneles Expandidos (Lazy Loading)
+    paneles_a_revisar = ['Favoritos', 'Lider', 'Cedears', 'General', 'Bonos']
 
-    for panel in st.session_state.paneles_expandidos:
-        if panel in config.TICKERS_CONFIG:
-            tickers_a_cargar.update(config.TICKERS_CONFIG[panel])
+    for panel in paneles_a_revisar:
+        # Revisa si la Session State guardó que debe estar abierto
+        is_expanded = st.session_state.get(f'expanded_{panel}', False)
+        
+        if is_expanded or not st.session_state.init_done:
+             # Favoritos se maneja aparte por database
+            if panel == 'Favoritos':
+                tickers_a_cargar.update(database.get_favoritos())
+            elif panel in config.TICKERS_CONFIG:
+                tickers_a_cargar.update(config.TICKERS_CONFIG[panel])
             
+    # 3. MEP
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     
     return list(tickers_a_cargar)
@@ -37,32 +50,30 @@ def get_tickers_a_cargar() -> List[str]:
 def update_data(lista_tickers, nombre_panel, silent=False):
     if not lista_tickers: return
 
-    # CRÍTICO: Usamos un bloque para manejar el estado del spinner
     status_placeholder = st.empty()
     contexto = status_placeholder.spinner(f"Cargando {nombre_panel}...") if not silent else st.empty()
     
-    start_time = time.time() # Medir tiempo de descarga
+    start_time = time.time()
 
     with contexto:
         # 1. Descarga de datos
         df_nuevo_raw = data_client.get_data(lista_tickers)
         
-        # 2. Control de Timeout/Falla
         if time.time() - start_time > 30 and df_nuevo_raw.empty:
-             if not silent: status_placeholder.error(f"❌ Error de Conexión: La descarga tardó mucho o falló para {nombre_panel}. Intenta en 1 minuto.")
+             if not silent: status_placeholder.error(f"❌ Error de Conexión: La descarga tardó mucho o falló.")
              return
 
         if df_nuevo_raw.empty:
-            if not silent: status_placeholder.warning(f"⚠️ No se encontraron datos para {nombre_panel}. Puede ser un problema de conexión a la API.")
+            if not silent: status_placeholder.warning(f"⚠️ No se encontraron datos.")
             return
 
-        # 3. MEP
+        # 2. MEP
         mep, var = market_logic.calcular_mep(df_nuevo_raw)
         if mep:
             st.session_state.mep_valor = mep
             st.session_state.mep_var = var
 
-        # 4. Indicadores
+        # 3. Indicadores
         try:
             df_nuevo_screener = market_logic.calcular_indicadores(df_nuevo_raw)
         except Exception as e:
@@ -71,7 +82,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
         if df_nuevo_screener.empty: return
 
-        # 5. Fusión (Mantiene todos los paneles, actualizando solo los nuevos)
+        # 4. Fusión
         if 'Precio' in df_nuevo_screener.columns:
             nuevos = df_nuevo_screener['Precio']
             st.session_state.precios_actuales.update(nuevos)
@@ -93,7 +104,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.last_update = datetime.now()
         
         if not silent: status_placeholder.success(f"✅ Datos actualizados en {time.time() - start_time:.2f}s.")
-        else: status_placeholder.empty() # Limpiar el placeholder si fue silencioso
+        else: status_placeholder.empty()
 
 
 def actualizar_todo(silent=False):
@@ -105,7 +116,6 @@ def actualizar_todo(silent=False):
         if not silent: st.warning("No hay tickers para cargar.")
         return
 
-    # Llamamos a la lógica principal de descarga
     update_data(t_a_cargar, "Mercado Global", silent=silent)
 
 
