@@ -4,7 +4,7 @@ import database
 import manager 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
-import numpy as np # CRÍTICO: Aseguramos que numpy esté disponible
+import numpy as np # Necesario para el np.isnan
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -46,7 +46,7 @@ df_port_raw = database.get_portafolio_df()
 mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
 
 
-# --- Lógica de Estilo (FORMATO DE DECIMALES CORREGIDO) ---
+# --- Lógica de Estilo (FORMATO DE DECIMALES Y NONE CORREGIDO) ---
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
     
@@ -61,14 +61,17 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    # Formato para las columnas (CORRECCIÓN: Decimales a 2 para Precio y Cantidad)
+    # Convertir las columnas numéricas que tienen .000000 a string con 2 decimales
+    # CRÍTICO: El formato debe ser aplicado a la columna de precio
+    df['Precio'] = df['Precio'].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and not np.isnan(x) else x).replace('nan', '--')
+    df['Cantidad_Total'] = df['Cantidad_Total'].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and not np.isnan(x) else x).replace('nan', '--')
+
+    # Formato para las columnas porcentuales (el resto usa el de arriba)
     format_dict = {
-        'Precio': '{:,.2f}', 
         'RSI': '{:.2f}', 
         'Caida_30d': '{:.2%}', 
         'Caida_5d': '{:.2%}', 
         'Suma_Caidas': '{:.2%}',
-        'Cantidad_Total': '{:,.2f}', 
         'Var_Ayer': '{:.2%}'
     }
 
@@ -78,6 +81,7 @@ def get_styled_screener(df, is_cartera_panel=False):
     # Aplicar el formato solo a las columnas existentes
     for col, fmt in format_dict.items():
         if col in df_styled.columns:
+            # Reemplazamos 0.000000 por string formateado
             df_styled = df_styled.format({col: fmt}, na_rep="--")
             
     return df_styled
@@ -87,7 +91,7 @@ def get_styled_screener(df, is_cartera_panel=False):
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
     if st.button("Refrescar Cartera"):
-        manager.actualizar_todo(silent=False) # Llama a la carga global para el Home
+        manager.actualizar_todo(silent=False)
         st.rerun()
     
     if df_port_raw.empty:
@@ -111,7 +115,6 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
             )
             
             # 3. Ordenamiento (CRÍTICO: Mover sin precio al final - USO DE NP.ISNAN)
-            # Creamos una columna clave para ordenar: 1 si Precio es NaN o 0, 0 si tiene valor
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
@@ -141,11 +144,14 @@ for p in paneles:
             
             # Renderizado Condicional: Muestra TODOS los que tienen Precio
             df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
-            df_show = df_show[df_show['Precio'] > 0] 
+            # CRÍTICO: Ya no filtramos por Precio > 0, mostramos todo.
+            # df_show = df_show[df_show['Precio'] > 0] 
             
             if not df_show.empty:
-                df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], inplace=True)
+                # Ordenar por Señal / Suma_Caídas, mandando los NaN al final
+                df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
+                # Seleccionamos solo las columnas relevantes del screener
                 cols_screener = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
                 st.dataframe(get_styled_screener(df_show[cols_screener], is_cartera_panel=False), use_container_width=True) 
             else:
