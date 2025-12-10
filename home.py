@@ -41,16 +41,38 @@ manager.mostrar_boton_actualizar()
 
 st.divider()
 
-# --- Lógica de Estilo (Añadimos formato al Ticker) ---
-def get_styled_screener(df):
+# A. PANEL CARTERA (Funciones de Soporte)
+# Leemos la cartera para la lógica de exclusión
+df_port_raw = database.get_portafolio_df()
+mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
+
+
+# --- Lógica de Estilo (CORREGIDO FORMATO DECIMAL Y LÓGICA DE COMPRA) ---
+def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
-    def highlight_buy(row):
-        return ['background-color: rgba(33, 195, 84, 0.2)'] * len(row) if row.get('Senal') == 'COMPRAR' else [''] * len(row)
     
-    # Formato para las columnas que suelen ser numéricas
+    # Lógica de Highlight: Solo si es 'COMPRAR' y NO está en cartera (a menos que sea la tabla Cartera en sí)
+    def highlight_buy(row):
+        senal = row.get('Senal')
+        ticker = row.name # Ticker es el índice
+        
+        # Regla de Oro: En Home, solo marcamos si no es activo en tenencia
+        if senal == 'COMPRAR' and not is_cartera_panel and ticker not in mis_tickers: 
+            return ['background-color: rgba(33, 195, 84, 0.2)'] * len(row)
+        # Regla para la tabla de Cartera (solo marcamos si la señal es de venta/alerta)
+        elif is_cartera_panel and (senal == 'STOP LOSS' or senal == 'TAKE PROFIT'):
+             return ['background-color: rgba(255, 75, 75, 0.25)'] * len(row)
+             
+        return [''] * len(row)
+
+    # Formato para las columnas que suelen ser numéricas (CORRECCIÓN DE DECIMALES)
     format_dict = {
-        'Precio': '{:,.2f}', 'RSI': '{:.2f}', 'Caida_30d': '{:.2%}', 'Caida_5d': '{:.2%}', 'Suma_Caidas': '{:.2%}',
-        'Cantidad_Total': '{:,.2f}' # Nuevo campo total
+        'Precio': '{:,.2f}', 
+        'RSI': '{:.2f}', 
+        'Caida_30d': '{:.2%}', 
+        'Caida_5d': '{:.2%}', 
+        'Suma_Caidas': '{:.2%}',
+        'Cantidad_Total': '{:,.2f}'
     }
 
     # Aplicar el estilo
@@ -66,71 +88,64 @@ def get_styled_screener(df):
 # --- PANELES ---
 
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
-df_port_raw = database.get_portafolio_df()
-mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
-
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
     if st.button("Refrescar Cartera"):
-        manager.actualizar_todo(silent=False) # Llama a la carga global para el Home
+        manager.actualizar_todo(silent=False)
         st.rerun()
     
     if df_port_raw.empty:
          st.caption("Tu portafolio está vacío.")
     else:
-        # 1. Agrupamos Lotes por Ticker y sumamos Cantidad
+        # 1. Agrupamos Lotes por Ticker
         df_agrupado = df_port_raw.groupby('Ticker').agg(
             Cantidad_Total=('Cantidad', 'sum'),
-            Broker_Principal=('Broker', lambda x: x.iloc[0]), # Mantenemos el broker del primer lote
-        ).reset_index()
+            Broker_Principal=('Broker', lambda x: x.iloc[0]),
+        ).reset_index().set_index('Ticker') # Usamos Ticker como índice para el merge
 
-        # 2. Filtramos el DataFrame de Oportunidades (Screener)
+        # 2. Filtramos y unimos el Portafolio Agrupado con las métricas de Screener
         df_screener = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(mis_tickers)]
         df_screener = df_screener[df_screener['Precio'] > 0]
         
         if df_screener.empty:
             st.caption("Esperando datos de mercado...")
         else:
-            # 3. Unimos Agrupación con las métricas de Screener (RSI, Señal)
             df_merged = df_agrupado.merge(
-                df_screener.drop(columns=['Precio'], errors='ignore'), # Precio se vuelve a traer
-                left_on='Ticker', right_index=True, how='left'
+                df_screener,
+                left_index=True, right_index=True, how='left'
             )
             
-            # 4. Unimos el precio actual
-            df_merged = df_merged.merge(
-                st.session_state.precios_actuales.to_frame('Precio'),
-                left_on='Ticker', right_index=True, how='left'
-            )
+            # 3. Columnas a mostrar (Restauradas a tu orden de tenencia)
+            cols_to_show = ['Precio', 'Cantidad_Total', 'RSI', 'Suma_Caidas', 'Senal', 'Broker_Principal']
             
-            # 5. Columnas a mostrar
-            cols_to_show = ['Ticker', 'Precio', 'Cantidad_Total', 'RSI', 'Suma_Caidas', 'Senal', 'Broker_Principal']
-            
-            # Reemplazar NaN en Screener con Neutro/--
+            # Limpieza y Renderizado
             df_merged['Senal'] = df_merged['Senal'].fillna('PENDIENTE')
+            
+            st.dataframe(get_styled_screener(df_merged[cols_to_show], is_cartera_panel=True), use_container_width=True)
 
-            st.dataframe(get_styled_screener(df_merged[cols_to_show]), use_container_width=True)
 
-
-# B. RESTO PANELES
+# C. RESTO PANELES
 paneles = ['Lider', 'Cedears', 'General', 'Bonos']
 iconos = {'Lider': '🏆', 'Cedears': '🌎', 'General': '📊', 'Bonos': 'b'}
 
 for p in paneles:
     if p in config.TICKERS_CONFIG:
-        # Aquí no queremos el filtro de la cartera!
+        # 1. Obtenemos todos los tickers del grupo
+        all_tickers_in_panel = config.TICKERS_CONFIG[p]
+        
         with st.expander(f"{iconos.get(p, '')} {p}", expanded=False):
             
             if st.button(f"Cargar {p}", key=f"btn_{p}"):
                 # Llama a la función que descarga ese panel y vuelve
-                manager.actualizar_panel_individual(p, config.TICKERS_CONFIG[p])
+                manager.actualizar_panel_individual(p, all_tickers_in_panel)
                 st.rerun()
             
             # Renderizado Condicional: Aquí SÍ mostramos el screener puro (TODOS)
-            df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(config.TICKERS_CONFIG[p])]
-            df_show = df_show[df_show['Precio'] > 0]
+            # Filtra Oportunidades por los tickers del panel Y que tengan precio
+            df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
+            df_show = df_show[df_show['Precio'] > 0] # Solo mostramos los que se cargaron realmente
             
             if not df_show.empty:
-                # Usamos el estilo original de screener para estos paneles
-                st.dataframe(get_styled_screener(df_show), use_container_width=True) 
+                # Usamos el estilo original de screener para estos paneles (is_cartera_panel=False)
+                st.dataframe(get_styled_screener(df_show, is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")

@@ -113,15 +113,15 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.oportunidades = df_total
         st.session_state.last_update = datetime.now()
 
-# --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
-    """NUEVA FUNCIÓN: Actualiza un solo panel (Lider, Bonos, etc.)"""
+    """ACTUALIZADA: Ahora lista_tickers contiene SOLO el panel a actualizar."""
     init_session_state()
     
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
     t_cartera = database.get_tickers_en_cartera()
     
-    # La descarga incluye el panel solicitado + cartera + MEP
+    # CRÍTICO: La descarga debe incluir el panel solicitado + cartera + MEP
+    # Esto asegura que al cargar 'Lider', no se borren los precios de la cartera
     t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
     
     update_data(t_a_cargar, nombre_panel, silent=False)
