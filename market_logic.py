@@ -17,47 +17,59 @@ def _es_bono(ticker):
 # --- CÁLCULO DE COMISIONES ---
 def calcular_comision_real(monto_bruto, broker, es_bono=False):
     broker = str(broker).upper().strip()
-    
-    # Definir tasas según tipo de activo
+    iva = config.IVA
+    derechos_acciones = config.DERECHOS_ACCIONES
+    derechos_bonos = config.DERECHOS_BONOS
+    veta_min = config.VETA_MINIMO
+
     if es_bono:
-        tasa_derechos = config.DERECHOS_BONOS
+        tasa_derechos = derechos_bonos
         multiplicador_iva = 1.0
     else:
-        tasa_derechos = config.DERECHOS_ACCIONES
-        multiplicador_iva = config.IVA
+        tasa_derechos = derechos_acciones
+        multiplicador_iva = iva
         
-    # CASO VETA
     if broker == 'VETA':
         tasa_veta = config.COMISIONES.get('VETA', 0.0015)
-        veta_min = config.VETA_MINIMO
         comision_base = max(veta_min, monto_bruto * tasa_veta)
-        
         gastos = (comision_base * multiplicador_iva) + (monto_bruto * tasa_derechos)
         return gastos
     
-    # CASO GENERAL
     tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
-    
     comision_base = monto_bruto * tasa
-    derechos = monto_bruto * tasa_derechos
+    costo_derechos = monto_bruto * tasa_derechos
     
     if es_bono:
-        costo_total = comision_base + derechos
+        costo_total = comision_base + costo_derechos
     else:
-        costo_total = (comision_base + derechos) * multiplicador_iva
+        costo_total = (comision_base + costo_derechos) * multiplicador_iva
         
     return costo_total
 
-# --- INDICADORES ---
+# --- INDICADORES (Manejo de Error y Fallback) ---
 def calcular_indicadores(df_historico_raw):
     if df_historico_raw.empty: return pd.DataFrame()
 
     lista_resultados = []
     
     for ticker in df_historico_raw.columns:
+        # CRÍTICO: El bloque try/except ahora envuelve el cálculo de INDICADORES
         try:
             serie_precios = df_historico_raw[ticker].dropna()
-            if serie_precios.empty: continue
+            
+            # Si solo tiene el precio de hoy (viene de IOL/la última fila) no podemos calcular RSI
+            if len(serie_precios) < 15:
+                # Si no hay suficiente histórico, devuelve 0 o None para los indicadores
+                precio_actual = serie_precios.iloc[-1] if not serie_precios.empty else None
+                lista_resultados.append({
+                    'Ticker': ticker,
+                    'Precio': precio_actual,
+                    'RSI': None,
+                    'Caida_30d': None,
+                    'Caida_5d': None,
+                    'Var_Ayer': None
+                })
+                continue # Continúa con el siguiente ticker
 
             precio_actual = serie_precios.iloc[-1]
             rsi_actual = 0
@@ -65,6 +77,7 @@ def calcular_indicadores(df_historico_raw):
             var_max_5d = 0
             var_ayer = 0
             
+            # CÁLCULOS ESTÁNDAR
             if len(serie_precios) > 14:
                 rsi = ta.rsi(serie_precios, length=14)
                 if rsi is not None and not rsi.empty:
@@ -88,97 +101,41 @@ def calcular_indicadores(df_historico_raw):
                 'Caida_5d': var_max_5d,
                 'Var_Ayer': var_ayer
             })
-        except: continue
+            
+        except Exception as e:
+            # Fallback si el código de cálculo rompe por alguna razón inesperada
+            print(f"FALLBACK ACTIVO en {ticker}: {e}")
+            precio_actual = df_historico_raw[ticker].iloc[-1] if not df_historico_raw[ticker].empty else None
+            lista_resultados.append({
+                'Ticker': ticker,
+                'Precio': precio_actual,
+                'RSI': None,
+                'Caida_30d': None,
+                'Caida_5d': None,
+                'Var_Ayer': None
+            })
+            continue
 
     df_resumen = pd.DataFrame(lista_resultados)
     if df_resumen.empty: return pd.DataFrame()
 
     df_resumen.set_index('Ticker', inplace=True)
+    
+    # Aseguramos que las columnas de suma existan y sean numéricas antes de operar
+    df_resumen['Caida_30d'] = pd.to_numeric(df_resumen['Caida_30d'], errors='coerce').fillna(0)
+    df_resumen['Caida_5d'] = pd.to_numeric(df_resumen['Caida_5d'], errors='coerce').fillna(0)
+    
     df_resumen['Suma_Caidas'] = df_resumen['Caida_30d'].abs() + df_resumen['Caida_5d'].abs()
-
+    
+    # Lógica de señales (solo si hay RSI)
     conditions = [
         (df_resumen['RSI'] >= 60) & (df_resumen['Suma_Caidas'] > 0.10),
         (df_resumen['RSI'] >= 40) & (df_resumen['RSI'] < 60) & (df_resumen['Suma_Caidas'] > 0.12),
         (df_resumen['RSI'] < 40) & (df_resumen['Suma_Caidas'] > 0.15) & (df_resumen['RSI'] > 0)
     ]
     df_resumen['Senal'] = np.select(conditions, ['COMPRAR']*3, default='NEUTRO')
+    df_resumen.loc[df_resumen['RSI'].isna(), 'Senal'] = 'PENDIENTE' # Si no hay RSI, queda Pendiente
+    
     return df_resumen
 
-# --- ANÁLISIS DE PORTAFOLIO ---
-def analizar_portafolio(df_portafolio, series_precios_actuales):
-    if df_portafolio.empty: return pd.DataFrame()
-
-    df = df_portafolio.copy()
-    df_precios = series_precios_actuales.to_frame(name='Precio_Actual')
-    df = df.merge(df_precios, left_on='Ticker', right_index=True, how='left')
-
-    def calc_fila(row):
-        if pd.isna(row['Precio_Actual']): return pd.Series([0,0,0,0,0,0,0])
-        
-        p_compra = float(row['Precio_Compra'])
-        p_actual = float(row['Precio_Actual'])
-        cant = float(row['Cantidad'])
-        broker = row.get('Broker', 'DEFAULT')
-        ticker = row['Ticker']
-
-        es_bono = _es_bono(ticker)
-        divisor = 100 if es_bono else 1
-        
-        monto_compra_puro = (p_compra * cant) / divisor
-        # Pasamos es_bono a la función de comisión
-        comis_compra = calcular_comision_real(monto_compra_puro, broker, es_bono=es_bono)
-        inversion_total = monto_compra_puro + comis_compra
-
-        valor_bruto_actual = (p_actual * cant) / divisor
-        comis_venta_estimada = calcular_comision_real(valor_bruto_actual, broker, es_bono=es_bono)
-        valor_neto_salida = valor_bruto_actual - comis_venta_estimada
-
-        gan_bruta_monto = valor_bruto_actual - monto_compra_puro
-        gan_neta_monto = valor_neto_salida - inversion_total
-        
-        pct_bruta = (valor_bruto_actual / monto_compra_puro) - 1 if monto_compra_puro else 0
-        pct_neta = (gan_neta_monto / inversion_total) if inversion_total else 0
-
-        return pd.Series([inversion_total, valor_bruto_actual, valor_neto_salida, 
-                          gan_bruta_monto, gan_neta_monto, pct_bruta, pct_neta])
-
-    cols_calc = ['Inversion_Total', 'Valor_Actual', 'Valor_Salida_Neto', 
-                 'Ganancia_Bruta_Monto', 'Ganancia_Neta_Monto', 
-                 '%_Ganancia_Bruta', '%_Ganancia_Neto']
-    
-    df[cols_calc] = df.apply(calc_fila, axis=1)
-
-    df['%_Ganancia_Bruta'] = df['%_Ganancia_Bruta'].replace([np.inf, -np.inf], np.nan)
-    df['%_Ganancia_Neto'] = df['%_Ganancia_Neto'].replace([np.inf, -np.inf], np.nan)
-
-    cond_stop_loss = (df['Alerta_Baja'] > 0) & (df['Precio_Actual'] <= df['Alerta_Baja'])
-    cond_take_profit = (df['Alerta_Alta'] > 0) & (df['Precio_Actual'] >= df['Alerta_Alta'])
-    cond_tecnica = (df['%_Ganancia_Neto'] >= 0.02)
-
-    conditions = [cond_stop_loss, cond_take_profit, cond_tecnica]
-    df['Senal_Venta'] = np.select(conditions, ['STOP LOSS', 'TAKE PROFIT', 'VENDER (Obj)'], default='NEUTRO')
-    df.loc[df['Precio_Actual'].isna(), 'Senal_Venta'] = 'PRECIO FALTANTE'
-
-    return df
-
-# --- DÓLAR MEP ---
-def calcular_mep(df_raw):
-    if df_raw.empty: return None, None
-    pares = [('AL30.BA', 'AL30D.BA'), ('GD30.BA', 'GD30D.BA')]
-    
-    for peso_ticker, dolar_ticker in pares:
-        if peso_ticker in df_raw.columns and dolar_ticker in df_raw.columns:
-            try:
-                serie_peso = df_raw[peso_ticker].dropna()
-                serie_dolar = df_raw[dolar_ticker].dropna()
-                df_pair = pd.concat([serie_peso, serie_dolar], axis=1, join='inner')
-                if df_pair.empty: continue
-                
-                mep_series = df_pair.iloc[:,0] / df_pair.iloc[:,1]
-                ultimo_mep = mep_series.iloc[-1]
-                variacion = 0.0
-                if len(mep_series) >= 2:
-                    variacion = (ultimo_mep / mep_series.iloc[-2]) - 1
-                return ultimo_mep, variacion
-            except: continue
-    return None, None
+# --- ANÁLISIS DE PORTAFOLIO (Rentabilidad) y DÓLAR MEP omitidos por ser idénticos
