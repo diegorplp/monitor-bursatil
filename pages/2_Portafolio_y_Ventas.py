@@ -28,8 +28,6 @@ with st.expander("⚙️ Opciones de Sincronización", expanded=False):
     with c_msg:
         st.caption("Usa 'Actualizar DB' si editaste Google Sheet manualmente. 'Actualizar Precios' solo trae cotizaciones de tus activos en tenencia.")
 
-# [Lógica anterior] if st.button("🔄 Actualizar Datos de Mercado"): se elimina para usar el expander
-
 # --- ESTILOS ---
 def get_styled_portafolio(df):
     if df.empty: return df
@@ -60,6 +58,7 @@ def get_styled_portafolio(df):
         '%GB': '{:.2%}', '%GN': '{:.2%}',
         'A.Alta': '{:,.2f}', 'A.Baja': '{:,.2f}'
     }
+    # CORREGIDO: Reemplazar use_container_width
     return df_styled.format(format_dict, na_rep="--")
 
 # --- HELPER ALERTAS ---
@@ -107,7 +106,7 @@ try:
         cols_finales = ['Ticker', 'Broker', 'Fecha', 'Cantidad', 'P.Compra', 'P.Actual', 'Inv.Total', 'GB', '%GB', 'GN', '%GN', 'A.Alta', 'A.Baja', 'Senal']
         cols_validas = [c for c in cols_finales if c in df_display.columns]
         
-        st.dataframe(get_styled_portafolio(df_display[cols_validas]), use_container_width=True, height=400, hide_index=True)
+        st.dataframe(get_styled_portafolio(df_display[cols_validas]), width='stretch', height=400, hide_index=True) # CORREGIDO
 
         st.divider()
         tab_venta, tab_alertas = st.tabs(["📉 Registrar Venta", "🔔 Configurar Alertas"])
@@ -160,7 +159,7 @@ try:
                             cantidad_a_vender=q_venta,
                             precio_venta=p_venta,
                             fecha_venta_str=f_venta.strftime('%Y-%m-%d'),
-                            precio_compra_id=precio_compra_orig # NUEVO PARAMETRO
+                            precio_compra_id=precio_compra_orig 
                         )
                         if res:
                             st.success(msg)

@@ -6,7 +6,6 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import numpy as np 
 import pandas as pd
-# import data_client (Ya no es necesario)
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -22,7 +21,7 @@ if AUTO_REFRESH_DISPONIBLE:
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
-    manager.actualizar_todo(silent=True) 
+    manager.actualizar_todo(silent=True)
     st.session_state.init_done = True
     st.rerun()
 
@@ -97,7 +96,7 @@ COLS_SCREENER_FULL = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Sum
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
     if st.button("Refrescar Cartera"):
-        manager.actualizar_todo(silent=False)
+        manager.actualizar_todo(silent=False) # Llama a la carga global para el Home
         st.rerun()
     
     if df_port_raw.empty:
@@ -133,8 +132,7 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
             cols_to_show = ['Precio', 'Cantidad_Total'] + COLS_SCREENER_FULL[1:] + ['Broker_Principal']
             if 'Var_Ayer' in cols_to_show: cols_to_show.remove('Var_Ayer') 
 
-            st.dataframe(get_styled_screener(df_merged[cols_to_show], is_cartera_panel=True), use_container_width=True)
-
+            st.dataframe(get_styled_screener(df_merged[cols_to_show], is_cartera_panel=True), width='stretch') # CORREGIDO
 
 # C. RESTO PANELES
 paneles = ['Lider', 'Cedears', 'General', 'Bonos']
@@ -157,6 +155,6 @@ for p in paneles:
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
                 COLS_SCREENER_FINAL = [c for c in COLS_SCREENER_FULL if c in df_show.columns]
-                st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FINAL], is_cartera_panel=False), use_container_width=True) 
+                st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FINAL], is_cartera_panel=False), width='stretch') # CORREGIDO
             else:
                  st.caption("Pulse Cargar para obtener datos.")

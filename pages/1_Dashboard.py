@@ -54,12 +54,11 @@ c4.metric("Total", f"${resultado_global:,.0f}")
 
 st.divider()
 
-# --- DIAGNÓSTICO RÁPIDO (Añade botón de actualizar DB) ---
+# --- DIAGNÓSTICO RÁPIDO (Opcional, útil para forzar recargas) ---
 with st.expander("⚙️ Opciones de Datos", expanded=False):
     c_op1, c_op2 = st.columns([1, 5])
     
     with c_op1:
-        # Botón para Forzar la Recarga del Caché de DB
         if st.button("🔄 Recargar DB"):
             st.cache_data.clear()
             st.rerun()
@@ -71,13 +70,12 @@ with st.expander("⚙️ Opciones de Datos", expanded=False):
             st.caption(f"Historial cargado: {len(df_hist)} operaciones procesadas.")
             st.caption("Usa 'Recargar DB' si editaste Google Sheet manualmente.")
 
-
 # --- GRÁFICOS ---
 if not df_validos.empty:
     g1, g2 = st.columns(2)
     with g1:
         base = alt.Chart(df_validos).encode(theta=alt.Theta("Valor_Actual", stack=True), color="Ticker", tooltip=["Ticker", "Valor_Actual"])
-        st.altair_chart(base.mark_arc(outerRadius=120), use_container_width=True)
+        st.altair_chart(base.mark_arc(outerRadius=120), use_container_width=True) # Mantenido: Los gráficos de Altair a veces usan esto
     with g2:
         chart = alt.Chart(df_validos).mark_bar().encode(
             x=alt.X('Ticker', sort='-y'), 
@@ -85,4 +83,4 @@ if not df_validos.empty:
             color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("green"), alt.value("red")),
             tooltip=["Ticker", "Ganancia_Neta_Monto"]
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True) # Mantenido: Los gráficos de Altair a veces usan esto
