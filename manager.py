@@ -15,9 +15,9 @@ def init_session_state():
     if 'oportunidades' not in st.session_state:
         df_base = pd.DataFrame(index=config.TICKERS)
         for col in screener_cols:
-             df_base[col] = pd.NA
-        # Inicializamos Suma_Caidas a float para que el sort_values no falle
-        df_base['Suma_Caidas'] = df_base['Suma_Caidas'].astype(float).fillna(0.0) 
+             # CRÍTICO: Inicialización más simple para evitar TypeErrors
+             df_base[col] = 0.0 if col != 'Senal' else 'PENDIENTE'
+             
         df_base['Senal'] = df_base['Senal'].fillna('PENDIENTE')
         st.session_state.oportunidades = df_base
         
@@ -67,7 +67,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             # Fusión
             df_total = st.session_state.oportunidades.copy()
             
-            # Fusión: CRÍTICO: Asegurar que Suma_Caidas sea float antes de ordenar
+            # Fusión: Aseguramos que Suma_Caidas sea float antes de ordenar
             df_nuevo_screener['Suma_Caidas'] = pd.to_numeric(df_nuevo_screener['Suma_Caidas'], errors='coerce')
             
             for idx in df_nuevo_screener.index:
@@ -77,7 +77,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             if not df_total.empty:
                 cols_sort = ['Senal', 'Suma_Caidas']
                 
-                # Paso 1: Forzar Suma_Caidas a numérico (float) para ordenar
                 if 'Suma_Caidas' in df_total.columns:
                      df_total['Suma_Caidas'] = pd.to_numeric(df_total['Suma_Caidas'], errors='coerce')
                 
