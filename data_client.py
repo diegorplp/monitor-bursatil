@@ -3,6 +3,7 @@ import yfinance as yf
 import requests
 import concurrent.futures
 from datetime import datetime, timedelta
+import numpy as np # Necesario para numpy.nan
 
 pd.options.mode.chained_assignment = None 
 IOL_BASE_URL = "https://api.invertironline.com"
@@ -17,7 +18,7 @@ except ImportError:
     IOL_USER = ""
     IOL_PASSWORD = ""
 
-# --- [FUNCIONES DE TOKEN E IOL OMITIDAS POR SER IDÉNTICAS] ---
+# --- TOKEN ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -32,8 +33,10 @@ def _get_iol_token():
         print(f"Error IOL Token (JSON/Otro): {e}")
         return None
 
+# --- PRECIOS EN TIEMPO REAL (IOL) ---
 def _fetch_iol_price(ticker_yahoo, token):
-    clean_symbol = ticker_yahoo.upper().replace('.BA', '')
+    # La API de IOL pide el Ticker SIN el sufijo (.BA, .C, etc.)
+    clean_symbol = ticker_yahoo.upper().replace('.BA', '').replace('.C', '') 
     market = 'bCBA'
     url = f"{IOL_BASE_URL}/api/v2/{market}/Titulos/{clean_symbol}/Cotizacion"
     headers = {"Authorization": f"Bearer {token}"}
@@ -78,33 +81,26 @@ def get_history_yahoo(tickers_list):
     
     df_close_list = []
     
-    # Bucle secuencial seguro: Si falla uno, el resto continúa
     for t in tickers_filtrados:
         try:
+            # Descarga de un solo ticker
             df = yf.download(tickers=t, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
             
             if not df.empty:
-                # 1. Limpieza: Forzamos la columna y manejo de error
                 col = 'Close' if 'Close' in df.columns else 'Adj Close'
                 if col in df.columns:
                     serie = df[col].rename(t)
-                    
-                    # CRÍTICO: Limpieza de la Serie antes de agregar
                     serie = pd.to_numeric(serie, errors='coerce')
-                    
-                    # 2. Reemplazamos 0 por NaN para que FFILL funcione y no arruine los cálculos
                     serie.replace(0, np.nan, inplace=True) 
                     
                     df_close_list.append(serie)
                 
         except Exception as e:
-            # Registramos el fallo para el ticker específico
             print(f"Error Yahoo en {t}: {e}")
             continue
 
     if not df_close_list: return pd.DataFrame()
 
-    # 3. Concatenamos, eliminamos el timezone, y rellenamos
     df_final = pd.concat(df_close_list, axis=1)
     
     if not df_final.empty and df_final.index.tz is not None:
@@ -114,9 +110,6 @@ def get_history_yahoo(tickers_list):
 
 # --- ORQUESTADOR PRINCIPAL (Mantenido) ---
 def get_data(lista_tickers=None):
-    """
-    Combina datos históricos (Yahoo) con precios de hoy (IOL).
-    """
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
 
@@ -129,7 +122,6 @@ def get_data(lista_tickers=None):
 
     df_history = get_history_yahoo(tickers_target)
 
-    # Si Yahoo falló, usamos solo los precios de IOL
     if df_history.empty:
         return pd.DataFrame([dict_precios_hoy], index=[today])
 
@@ -145,3 +137,105 @@ def get_data(lista_tickers=None):
     df_final = df_final[df_final.index >= cutoff]
 
     return df_final
+
+# ----------------------------------------------------
+# --- FUNCIÓN DE TESTEO DE CONEXIÓN Y NOMENCLATURA ---
+# ----------------------------------------------------
+
+def test_data_sources(tickers_to_test):
+    """Prueba tickers con sus variantes de nomenclatura."""
+    print("\n=============================================")
+    print("      INICIO DE TESTEO DE NOMENCLATURA")
+    print("=============================================")
+    
+    iol_token = _get_iol_token()
+    if not iol_token:
+        print("❌ ERROR CRÍTICO: No se pudo obtener el token de IOL. Verifica usuario/contraseña.")
+        return
+
+    results = []
+    
+    for base_ticker in tickers_to_test:
+        test_variants = {
+            f"{base_ticker}.BA": "Bolsa Argentina (.BA)",
+            f"{base_ticker}": "Sin sufijo (RAW)",
+            f"{base_ticker}.C": "Cedear (.C)",
+            f"{base_ticker}.L": "Cedear (.L - Yahoo)"
+        }
+        
+        print(f"\n--- Probando Ticker Base: {base_ticker} ---")
+        
+        for ticker_test, desc in test_variants.items():
+            # 1. Test IOL (Precio Actual)
+            iol_symbol = ticker_test.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
+            url_iol = f"{IOL_BASE_URL}/api/v2/bCBA/Titulos/{iol_symbol}/Cotizacion"
+            headers = {"Authorization": f"Bearer {iol_token}"}
+            
+            iol_price = "❌ FALLA"
+            try:
+                r = requests.get(url_iol, headers=headers, timeout=3)
+                if r.status_code == 200:
+                    iol_price = r.json().get('ultimoPrecio', 'NO PRICE')
+            except: pass
+            
+            # 2. Test Yahoo (Histórico)
+            df_yahoo = yf.download(tickers=ticker_test, start=datetime.now() - timedelta(days=50), interval='1d', auto_adjust=True, progress=False, threads=False, timeout=5)
+            yahoo_ok = not df_yahoo.empty
+            
+            results.append({
+                'Test Ticker': ticker_test,
+                'IOL Price': iol_price,
+                'Yahoo OK': yahoo_ok
+            })
+            
+            print(f"  > {desc} ({ticker_test}): IOL Price: {iol_price}, Yahoo Histórico: {'✅ OK' if yahoo_ok else '❌ FALLA'}")
+
+    print("\n=============================================")
+    print("FIN DE TESTEO")
+    print("=============================================")
+
+
+def run_diagnostic_test(tickers_to_test):
+    """Ejecuta pruebas de conexión y nomenclatura para un grupo de tickers."""
+    
+    iol_token = _get_iol_token()
+    
+    results = []
+    
+    if not iol_token:
+        results.append("❌ ERROR CRÍTICO: No se pudo obtener el token de IOL. Verifica usuario/contraseña en st.secrets.")
+        return results
+
+    
+    for base_ticker in tickers_to_test:
+        test_variants = {
+            f"{base_ticker}.BA": "Bolsa Argentina (.BA)",
+            f"{base_ticker}": "Sin sufijo (RAW)",
+            f"{base_ticker}.C": "Cedear (.C)",
+            f"{base_ticker}.L": "Cedear (.L - Yahoo)"
+        }
+        
+        results.append(f"\n--- Probando Ticker Base: {base_ticker} ---")
+        
+        for ticker_test, desc in test_variants.items():
+            # 1. Test IOL (Precio Actual)
+            iol_symbol = ticker_test.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
+            url_iol = f"{IOL_BASE_URL}/api/v2/bCBA/Titulos/{iol_symbol}/Cotizacion"
+            headers = {"Authorization": f"Bearer {iol_token}"}
+            
+            iol_price = "❌ FALLA"
+            try:
+                r = requests.get(url_iol, headers=headers, timeout=3)
+                if r.status_code == 200:
+                    iol_price = r.json().get('ultimoPrecio', 'NO PRICE')
+                elif r.status_code == 404:
+                    iol_price = "❌ 404 (No Encontrado)"
+            except: pass
+            
+            # 2. Test Yahoo (Histórico)
+            df_yahoo = yf.download(tickers=ticker_test, start=datetime.now() - timedelta(days=50), interval='1d', auto_adjust=True, progress=False, threads=False, timeout=5)
+            yahoo_ok = not df_yahoo.empty
+            
+            results.append(f"  > {desc} ({ticker_test}): IOL Price: {iol_price}, Yahoo Histórico: {'✅ OK' if yahoo_ok else '❌ FALLA'}")
+
+    return results
