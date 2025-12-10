@@ -7,17 +7,22 @@ import database
 import config
 import time
 from typing import List
+import requests
+import yfinance as yf
+import numpy as np
+from datetime import timedelta # Importamos timedelta
+
+IOL_BASE_URL = "https://api.invertironline.com"
 
 # --- INICIALIZACIÓN DE ESTADO ---
+# ... (Bloque init_session_state idéntico omitido) ...
 def init_session_state():
     screener_cols = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
 
     if 'oportunidades' not in st.session_state:
         df_base = pd.DataFrame(index=config.TICKERS)
         for col in screener_cols:
-             # CRÍTICO: Inicialización más simple para evitar TypeErrors
              df_base[col] = 0.0 if col != 'Senal' else 'PENDIENTE'
-             
         df_base['Senal'] = df_base['Senal'].fillna('PENDIENTE')
         st.session_state.oportunidades = df_base
         
@@ -26,16 +31,16 @@ def init_session_state():
     if 'mep_var' not in st.session_state: st.session_state.mep_var = None
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
-    
-# --- LÓGICA DE DETECCIÓN DE TICKERS ---
+
+
+# --- LÓGICA DE DETECCIÓN DE TICKERS y UPDATE_DATA (idéntico omitido) ---
 def get_tickers_a_cargar() -> List[str]:
-    """Solo carga los tickers necesarios para calcular el MEP."""
     tickers_a_cargar = set()
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     return list(tickers_a_cargar)
 
-# --- LÓGICA DE ACTUALIZACIÓN BASE ---
 def update_data(lista_tickers, nombre_panel, silent=False):
+    # ... (Bloque update_data idéntico omitido) ...
     if not lista_tickers: return
 
     if not silent:
@@ -67,7 +72,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             # Fusión
             df_total = st.session_state.oportunidades.copy()
             
-            # Fusión: Aseguramos que Suma_Caidas sea float antes de ordenar
             df_nuevo_screener['Suma_Caidas'] = pd.to_numeric(df_nuevo_screener['Suma_Caidas'], errors='coerce')
             
             for idx in df_nuevo_screener.index:
@@ -76,10 +80,8 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             
             if not df_total.empty:
                 cols_sort = ['Senal', 'Suma_Caidas']
-                
                 if 'Suma_Caidas' in df_total.columns:
                      df_total['Suma_Caidas'] = pd.to_numeric(df_total['Suma_Caidas'], errors='coerce')
-                
                 df_total.sort_values(by=cols_sort, ascending=[True, False], na_position='last', inplace=True)
 
             st.session_state.oportunidades = df_total
@@ -124,7 +126,54 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.oportunidades = df_total
         st.session_state.last_update = datetime.now()
 
-# --- FUNCIONES DE ORQUESTACIÓN ---
+
+# --- LÓGICA DE DIAGNÓSTICO (MOVILIZADA DESDE data_client.py) ---
+def run_diagnostic_test(tickers_to_test):
+    """Ejecuta pruebas de conexión y nomenclatura para un grupo de tickers."""
+    
+    iol_token = data_client._get_iol_token()
+    
+    results = []
+    
+    if not iol_token:
+        results.append("❌ ERROR CRÍTICO: No se pudo obtener el token de IOL. Verifica usuario/contraseña en st.secrets.")
+        return results
+
+    
+    for base_ticker in tickers_to_test:
+        test_variants = {
+            f"{base_ticker}.BA": "Bolsa Argentina (.BA)",
+            f"{base_ticker}": "Sin sufijo (RAW)",
+            f"{base_ticker}.L": "Cedear (.L - Yahoo)"
+        }
+        
+        results.append(f"\n--- Probando Ticker Base: {base_ticker} ---")
+        
+        for ticker_test, desc in test_variants.items():
+            # 1. Test IOL (Precio Actual)
+            iol_symbol = ticker_test.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
+            url_iol = f"{IOL_BASE_URL}/api/v2/bCBA/Titulos/{iol_symbol}/Cotizacion"
+            headers = {"Authorization": f"Bearer {iol_token}"}
+            
+            iol_price = "❌ FALLA"
+            try:
+                r = requests.get(url_iol, headers=headers, timeout=3)
+                if r.status_code == 200:
+                    iol_price = r.json().get('ultimoPrecio', 'NO PRICE')
+                elif r.status_code == 404:
+                    iol_price = "❌ 404 (No Encontrado)"
+            except: pass
+            
+            # 2. Test Yahoo (Histórico)
+            df_yahoo = yf.download(tickers=ticker_test, start=datetime.now() - timedelta(days=50), interval='1d', auto_adjust=True, progress=False, threads=False, timeout=5)
+            yahoo_ok = not df_yahoo.empty
+            
+            results.append(f"  > {desc} ({ticker_test}): IOL Price: {iol_price}, Yahoo Histórico: {'✅ OK' if yahoo_ok else '❌ FALLA'}")
+
+    return results
+
+
+# --- FUNCIONES DE ORQUESTACIÓN y WIDGET DE SIDEBAR (idéntico omitido) ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
     init_session_state()
     
@@ -159,7 +208,6 @@ def actualizar_todo(silent=False):
         actualizar_solo_cartera(silent=silent)
 
 
-# --- WIDGET DE SIDEBAR ---
 def mostrar_boton_actualizar():
     init_session_state()
     st.sidebar.markdown("---")
@@ -174,3 +222,24 @@ def mostrar_boton_actualizar():
         
     if st.session_state.mep_valor:
         st.sidebar.metric("MEP", f"${st.session_state.mep_valor:,.0f}")
+
+# Lista de tickers para la prueba.
+TEST_TICKERS_DIAG = [
+    'A3',      # Acción Local
+    'NFLX',    # Cedear
+    'MSFT',    # Cedear
+    'AL30'     # Bono
+]
+
+# --- PANEL DE DIAGNÓSTICO DE CONECTIVIDAD (NUEVO) ---
+with st.expander("🛠️ Diagnóstico de Conexión y Simbología", expanded=False):
+    st.caption("Usa este panel para verificar qué nomenclatura funciona para IOL y Yahoo Finance.")
+    
+    if st.button("▶️ Ejecutar Test de Conexión (Lento)"):
+        with st.spinner("Ejecutando test en IOL y Yahoo Finance..."):
+            # CRÍTICO: La llamada al manager se hace directamente.
+            test_results = manager.run_diagnostic_test(TEST_TICKERS_DIAG)
+            st.session_state['test_results_diag'] = test_results
+            
+    if 'test_results_diag' in st.session_state:
+        st.code('\n'.join(st.session_state['test_results_diag']), language='text')
