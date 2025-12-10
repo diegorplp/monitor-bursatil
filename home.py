@@ -4,6 +4,7 @@ import database
 import manager 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+import numpy as np # CRÍTICO: Aseguramos que numpy esté disponible
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -49,7 +50,6 @@ mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty e
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
     
-    # Lógica de Highlight: Excluye tenencia de la señal de COMPRAR
     def highlight_buy(row):
         senal = row.get('Senal')
         ticker = row.name
@@ -68,7 +68,7 @@ def get_styled_screener(df, is_cartera_panel=False):
         'Caida_30d': '{:.2%}', 
         'Caida_5d': '{:.2%}', 
         'Suma_Caidas': '{:.2%}',
-        'Cantidad_Total': '{:,.2f}', # Cantidad con 2 decimales
+        'Cantidad_Total': '{:,.2f}', 
         'Var_Ayer': '{:.2%}'
     }
 
@@ -110,8 +110,9 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento (CRÍTICO: Mover sin precio al final)
-            df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if pd.isna(x) or x == 0 else 0)
+            # 3. Ordenamiento (CRÍTICO: Mover sin precio al final - USO DE NP.ISNAN)
+            # Creamos una columna clave para ordenar: 1 si Precio es NaN o 0, 0 si tiene valor
+            df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
             
@@ -140,13 +141,11 @@ for p in paneles:
             
             # Renderizado Condicional: Muestra TODOS los que tienen Precio
             df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
-            df_show = df_show[df_show['Precio'] > 0] # Solo mostramos los que se cargaron realmente
+            df_show = df_show[df_show['Precio'] > 0] 
             
             if not df_show.empty:
-                # Ordenar por Señal / Suma_Caídas
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], inplace=True)
                 
-                # Seleccionamos solo las columnas relevantes del screener
                 cols_screener = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
                 st.dataframe(get_styled_screener(df_show[cols_screener], is_cartera_panel=False), use_container_width=True) 
             else:
