@@ -4,7 +4,7 @@ import database
 import manager 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
-import numpy as np # Necesario para el np.isnan
+import numpy as np # Necesario para np.isnan
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -46,7 +46,7 @@ df_port_raw = database.get_portafolio_df()
 mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
 
 
-# --- Lógica de Estilo (FORMATO DE DECIMALES Y NONE CORREGIDO) ---
+# --- Lógica de Estilo (FORMATO DE DECIMALES Y KEYERROR CORREGIDO) ---
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
     
@@ -61,14 +61,23 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    # Convertir las columnas numéricas que tienen .000000 a string con 2 decimales
-    # CRÍTICO: El formato debe ser aplicado a la columna de precio
-    df['Precio'] = df['Precio'].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and not np.isnan(x) else x).replace('nan', '--')
-    df['Cantidad_Total'] = df['Cantidad_Total'].apply(lambda x: f"{x:,.2f}" if isinstance(x, (int, float)) and not np.isnan(x) else x).replace('nan', '--')
+    # Convertir las columnas numéricas a string con formato (.2f)
+    df_temp = df.copy() # Trabajamos con una copia para evitar SettingWithCopyWarning
+    
+    # 1. Aplicar formato de precio (CORREGIDO)
+    if 'Precio' in df_temp.columns:
+        # Reemplazamos NaN o None por un guion para que el formato funcione
+        df_temp['Precio'] = df_temp['Precio'].fillna(0.0) 
+        df_temp['Precio'] = df_temp['Precio'].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
 
-    # Formato para las columnas porcentuales (el resto usa el de arriba)
+    # 2. Aplicar formato de Cantidad (solo en cartera)
+    if is_cartera_panel and 'Cantidad_Total' in df_temp.columns:
+        df_temp['Cantidad_Total'] = df_temp['Cantidad_Total'].fillna(0.0)
+        df_temp['Cantidad_Total'] = df_temp['Cantidad_Total'].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
+    
+    # 3. Formato para las columnas porcentuales (incluido RSI)
     format_dict = {
-        'RSI': '{:.2f}', 
+        'RSI': '{:.2f}', # CORREGIDO: RSI a 2 decimales
         'Caida_30d': '{:.2%}', 
         'Caida_5d': '{:.2%}', 
         'Suma_Caidas': '{:.2%}',
@@ -76,12 +85,11 @@ def get_styled_screener(df, is_cartera_panel=False):
     }
 
     # Aplicar el estilo
-    df_styled = df.style.apply(highlight_buy, axis=1)
+    df_styled = df_temp.style.apply(highlight_buy, axis=1)
     
     # Aplicar el formato solo a las columnas existentes
     for col, fmt in format_dict.items():
         if col in df_styled.columns:
-            # Reemplazamos 0.000000 por string formateado
             df_styled = df_styled.format({col: fmt}, na_rep="--")
             
     return df_styled
@@ -91,7 +99,7 @@ def get_styled_screener(df, is_cartera_panel=False):
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
     if st.button("Refrescar Cartera"):
-        manager.actualizar_todo(silent=False)
+        manager.actualizar_todo(silent=False) # Llama a la carga global para el Home
         st.rerun()
     
     if df_port_raw.empty:
@@ -144,8 +152,6 @@ for p in paneles:
             
             # Renderizado Condicional: Muestra TODOS los que tienen Precio
             df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
-            # CRÍTICO: Ya no filtramos por Precio > 0, mostramos todo.
-            # df_show = df_show[df_show['Precio'] > 0] 
             
             if not df_show.empty:
                 # Ordenar por Señal / Suma_Caídas, mandando los NaN al final
