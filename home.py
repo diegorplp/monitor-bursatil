@@ -5,6 +5,7 @@ import manager
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import numpy as np 
+import pandas as pd # CRÍTICO: Asegurar la importación de pandas para el scope
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -81,8 +82,8 @@ def get_styled_screener(df, is_cartera_panel=False):
     # 2. Conversión a string para Precio y Cantidad (Esto debe ir después)
     for col in ['Precio', 'Cantidad_Total']:
         if col in df_temp.columns:
-            # Forzar la conversión a float para evitar que el string o None rompa el apply
-            df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0.0) 
+            # Reemplazar NaN o None con 0 antes de formatear
+            df_temp[col] = df_temp[col].fillna(0.0) 
             df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
             df_styled.data[col] = df_temp[col]
             
@@ -119,11 +120,12 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento (CRÍTICO: SOLUCIÓN AL BUG DE LA LÍNEA)
-            # Primero, forzamos Precio a numérico para que el np.isnan funcione.
-            df_merged['Precio'] = pd.to_numeric(df_merged['Precio'], errors='coerce') 
-            
-            # Ahora, la lógica de ordenamiento no falla
+            # 3. Ordenamiento (CRÍTICO: CONVERSIÓN A NUMÉRICO PARA ORDENAR)
+            # Intentar convertir la columna 'Precio' a numérica antes de ordenar
+            # Esto evita el error si Price es un objeto con None/str/np.nan
+            if df_merged['Precio'].dtype != 'float64':
+                 df_merged['Precio'] = pd.to_numeric(df_merged['Precio'], errors='coerce').fillna(0.0) 
+
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], na_position='last', inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
