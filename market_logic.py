@@ -139,3 +139,41 @@ def calcular_indicadores(df_historico_raw):
     return df_resumen
 
 # --- ANÁLISIS DE PORTAFOLIO (Rentabilidad) y DÓLAR MEP omitidos por ser idénticos
+
+# --- DÓLAR MEP (Manejo de Error) ---
+def calcular_mep(df_raw):
+    if df_raw.empty: return None, None
+    pares = [('AL30.BA', 'AL30D.BA'), ('GD30.BA', 'GD30D.BA')]
+    
+    for peso_ticker, dolar_ticker in pares:
+        # CRÍTICO: Comprobar si las columnas existen antes de intentar usarlas
+        if peso_ticker in df_raw.columns and dolar_ticker in df_raw.columns:
+            try:
+                # Ahora usamos el valor de cierre/último precio (última fila)
+                serie_peso = df_raw[peso_ticker].dropna()
+                serie_dolar = df_raw[dolar_ticker].dropna()
+                
+                # CRÍTICO: Si no hay datos, pasa al siguiente par
+                if serie_peso.empty or serie_dolar.empty: continue
+                
+                # Buscamos la última fila que tenga valor en ambas
+                df_pair = pd.concat([serie_peso, serie_dolar], axis=1, join='inner')
+                if df_pair.empty: continue
+                
+                mep_series = df_pair.iloc[:,0] / df_pair.iloc[:,1]
+                
+                # Si el último valor es NaN, intentamos el anterior
+                ultimo_mep = mep_series.iloc[-1]
+                
+                variacion = 0.0
+                if len(mep_series) >= 2:
+                    variacion = (ultimo_mep / mep_series.iloc[-2]) - 1
+                
+                return ultimo_mep, variacion
+                
+            except Exception as e:
+                 # Si rompe por algún cálculo, intenta el siguiente par
+                 print(f"Error calculando MEP para {peso_ticker}: {e}")
+                 continue
+                 
+    return None, None
