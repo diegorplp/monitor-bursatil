@@ -47,24 +47,45 @@ COMISIONES = {
 # TICKERS Y CATEGORÍAS
 TICKERS_CONFIG = {
     'Favoritos': ['GGAL.BA', 'YPFD.BA', 'AL30.BA', 'GD30.BA'],
+    
+    # Lider: 20 Merval + BHIP + BPAT
     'Lider': [
         'ALUA.BA', 'BBAR.BA', 'BMA.BA', 'BYMA.BA', 'CEPU.BA', 'COME.BA', 
         'CRES.BA', 'EDN.BA', 'GGAL.BA', 'LOMA.BA', 'MIRG.BA', 'PAMP.BA', 
         'SUPV.BA', 'TECO2.BA', 'TGNO4.BA', 'TGSU2.BA', 'TRAN.BA', 'TXAR.BA', 
-        'VALO.BA', 'YPFD.BA'
+        'VALO.BA', 'YPFD.BA',
+        # Agregados por solicitud
+        'BHIP.BA', 'BPAT.BA'
     ],
-    'General': ['BHIP.BA', 'BPAT.BA', 'BOLT.BA', 'LEDE.BA', 'MOLI.BA', 'SEMI.BA'],
+    
+    # General: Stocks restantes que no son Merval
+    'General': [
+        'BOLT.BA', 'LEDE.BA', 'MOLI.BA', 'SEMI.BA', 
+        # Si quieres agregar más acciones conocidas del panel general:
+        'DGCU2.BA', 'GARO.BA', 'CADO.BA' 
+    ],
+    
+    # Cedears: Selección de los más líquidos y representativos
     'Cedears': [
-        'AAPL.BA', 'AMD.BA', 'AMZN.BA', 'BABA.BA', 'DIS.BA', 'GOOGL.BA', 
-        'KO.BA', 'MELI.BA', 'MSFT.BA', 'NVDA.BA', 'QCOM.BA', 'SPY.BA', 
-        'TSLA.BA', 'VIST.BA', 'X.BA'
+        # Tech & Growth (Lideres)
+        'AAPL.BA', 'MSFT.BA', 'GOOGL.BA', 'AMZN.BA', 'NVDA.BA', 'AMD.BA', 
+        'TSLA.BA', 'META.BA', 'MELI.BA', 'ADBE.BA',
+        # Consumo / Retail
+        'BABA.BA', 'DIS.BA', 'KO.BA', 'WMT.BA', 'MCD.BA', 'PFE.BA',
+        # Financieras / Industriales
+        'V.BA', 'JPM.BA', 'QCOM.BA', 'BBD.BA', 'X.BA', 
+        # ETFs y Energía
+        'SPY.BA', 'QQQ.BA', 'DIA.BA', 'VIST.BA', 'ARKK.BA'
     ],
+    
+    # Bonos: Lista completa de AL/GD + Ley Local/Extranjera + Letras
     'Bonos': [
         'AL29.BA', 'AL29D.BA', 'AL30.BA', 'AL30D.BA', 'AL35.BA', 'AL35D.BA',
         'AE38.BA', 'AE38D.BA', 'AL41.BA', 'AL41D.BA',
         'GD29.BA', 'GD29D.BA', 'GD30.BA', 'GD30D.BA', 'GD35.BA', 'GD35D.BA',
         'GD38.BA', 'GD38D.BA', 'GD41.BA', 'GD41D.BA', 'GD46.BA', 'GD46D.BA',
-        'TX24.BA', 'TX26.BA', 'TX28.BA', 'TO26.BA'
     ]
 }
+
+# La lógica para generar la lista única de tickers (TICKERS) sigue siendo perfecta
 TICKERS = list(set([t for sublist in TICKERS_CONFIG.values() for t in sublist]))
