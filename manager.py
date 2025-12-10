@@ -7,15 +7,10 @@ import database
 import config
 import time
 from typing import List
-import requests
-import yfinance as yf
-import numpy as np
-from datetime import timedelta # Importamos timedelta
 
-IOL_BASE_URL = "https://api.invertironline.com"
+# ... [Bloque init_session_state idéntico omitido] ...
 
-# --- INICIALIZACIÓN DE ESTADO ---
-# ... (Bloque init_session_state idéntico omitido) ...
+# --- LÓGICA DE DETECCIÓN DE TICKERS y UPDATE_DATA (idéntico omitido) ---
 def init_session_state():
     screener_cols = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
 
@@ -31,20 +26,38 @@ def init_session_state():
     if 'mep_var' not in st.session_state: st.session_state.mep_var = None
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
-
-
-# --- LÓGICA DE DETECCIÓN DE TICKERS y UPDATE_DATA (idéntico omitido) ---
+    
 def get_tickers_a_cargar() -> List[str]:
     tickers_a_cargar = set()
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     return list(tickers_a_cargar)
 
 def update_data(lista_tickers, nombre_panel, silent=False):
-    # ... (Bloque update_data idéntico omitido) ...
     if not lista_tickers: return
 
     if not silent:
         with st.spinner(f"Cargando {nombre_panel}..."):
+            # CRÍTICO: Aquí solo llamamos a la descarga de IOL (para Dash/Portafolio)
+            if nombre_panel == "SOLO IOL (Dashboard)":
+                dict_precios_hoy = data_client.get_current_prices_iol(lista_tickers)
+                if not dict_precios_hoy:
+                    st.warning(f"⚠️ No se encontraron precios en tiempo real.")
+                    return
+                # Actualizar precios en session state y listo
+                st.session_state.precios_actuales.update(dict_precios_hoy)
+                
+                # Recalcular MEP (necesita el precio actual)
+                df_raw = pd.DataFrame([dict_precios_hoy])
+                mep, var = market_logic.calcular_mep(df_raw)
+                if mep:
+                    st.session_state.mep_valor = mep
+                    st.session_state.mep_var = var
+                
+                st.session_state.last_update = datetime.now()
+                st.success(f"✅ Precios IOL actualizados.")
+                return
+
+            # --- Lógica de Descarga COMPLETA (Home) ---
             df_nuevo_raw = data_client.get_data(lista_tickers)
             
             if df_nuevo_raw.empty:
@@ -69,7 +82,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
                 st.session_state.precios_actuales.update(nuevos)
                 st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(nuevos)
             
-            # Fusión
             df_total = st.session_state.oportunidades.copy()
             
             df_nuevo_screener['Suma_Caidas'] = pd.to_numeric(df_nuevo_screener['Suma_Caidas'], errors='coerce')
@@ -88,7 +100,8 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             st.session_state.last_update = datetime.now()
             st.success(f"✅ Datos actualizados.")
             
-    else: # Si silent=True, procesa sin spinner (auto-refresh)
+    else: # Si silent=True, procesa sin spinner
+        # Lógica de carga silenciosa (Auto-Refresh)
         df_nuevo_raw = data_client.get_data(lista_tickers)
         if df_nuevo_raw.empty: return
 
@@ -108,7 +121,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             st.session_state.precios_actuales.update(nuevos)
             st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(nuevos)
         
-        # Fusión silenciosa
         df_total = st.session_state.oportunidades.copy()
         
         df_nuevo_screener['Suma_Caidas'] = pd.to_numeric(df_nuevo_screener['Suma_Caidas'], errors='coerce')
@@ -127,19 +139,8 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.last_update = datetime.now()
 
 
-# --- FUNCIONES DE ORQUESTACIÓN y WIDGET DE SIDEBAR (idéntico omitido) ---
-def actualizar_panel_individual(nombre_panel, lista_tickers):
-    init_session_state()
-    
-    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
-    t_cartera = database.get_tickers_en_cartera()
-    
-    t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
-    
-    update_data(t_a_cargar, nombre_panel, silent=False)
-
-
 def actualizar_solo_cartera(silent=False):
+    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
     init_session_state()
     
     t_cartera = database.get_tickers_en_cartera()
@@ -152,7 +153,24 @@ def actualizar_solo_cartera(silent=False):
     update_data(t_a_cargar, "Portafolio en Tenencia", silent=silent)
 
 
+def actualizar_solo_iol():
+    """NUEVA FUNCIÓN: Actualiza solo IOL (precios de Portafolio + MEP) para DASHBOARD."""
+    init_session_state()
+    
+    t_cartera = database.get_tickers_en_cartera()
+    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+    t_a_cargar = list(set(t_cartera + t_mep))
+    
+    if not t_a_cargar:
+        st.warning("No hay activos para actualizar.")
+        return
+
+    # Llama al update_data con un nombre especial para activar la lógica de SOLO IOL
+    update_data(t_a_cargar, "SOLO IOL (Dashboard)", silent=False)
+
+
 def actualizar_todo(silent=False):
+    """Función para HOME (Carga SOLO MEP al inicio o Portafolio + MEP en auto-refresh)."""
     init_session_state()
 
     if not st.session_state.init_done:
@@ -162,6 +180,7 @@ def actualizar_todo(silent=False):
         actualizar_solo_cartera(silent=silent)
 
 
+# --- WIDGET DE SIDEBAR (idéntico omitido) ---
 def mostrar_boton_actualizar():
     init_session_state()
     st.sidebar.markdown("---")
@@ -176,4 +195,3 @@ def mostrar_boton_actualizar():
         
     if st.session_state.mep_valor:
         st.sidebar.metric("MEP", f"${st.session_state.mep_valor:,.0f}")
-

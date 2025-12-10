@@ -10,7 +10,8 @@ st.title("📊 Rendimiento del Portafolio")
 
 # --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL ---
 if st.button("🔄 Actualizar Datos de Mercado"):
-    manager.actualizar_todo(silent=False) 
+    # Llama a la nueva función que solo actualiza IOL
+    manager.actualizar_solo_iol() 
     st.rerun()
 
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:
@@ -26,6 +27,7 @@ except Exception as e:
     st.stop()
 
 # --- CÁLCULOS ---
+# ... (Bloque de cálculos idéntico) ...
 ganancia_latente = 0.0
 valor_cartera = 0.0
 ganancia_realizada = 0.0
@@ -33,6 +35,7 @@ ganancia_realizada = 0.0
 # 1. Tenencia
 df_validos = pd.DataFrame()
 if not df_port.empty:
+    # Esta función ya fue restaurada en market_logic.py
     df_analizado = market_logic.analizar_portafolio(df_port, st.session_state.precios_actuales)
     if 'Valor_Actual' in df_analizado.columns:
         df_validos = df_analizado[df_analizado['Valor_Actual'] > 0].copy()
@@ -75,7 +78,7 @@ if not df_validos.empty:
     g1, g2 = st.columns(2)
     with g1:
         base = alt.Chart(df_validos).encode(theta=alt.Theta("Valor_Actual", stack=True), color="Ticker", tooltip=["Ticker", "Valor_Actual"])
-        st.altair_chart(base.mark_arc(outerRadius=120), use_container_width=True) # Mantenido: Los gráficos de Altair a veces usan esto
+        st.altair_chart(base.mark_arc(outerRadius=120), width='stretch')
     with g2:
         chart = alt.Chart(df_validos).mark_bar().encode(
             x=alt.X('Ticker', sort='-y'), 
@@ -83,4 +86,4 @@ if not df_validos.empty:
             color=alt.condition(alt.datum.Ganancia_Neta_Monto > 0, alt.value("green"), alt.value("red")),
             tooltip=["Ticker", "Ganancia_Neta_Monto"]
         )
-        st.altair_chart(chart, use_container_width=True) # Mantenido: Los gráficos de Altair a veces usan esto
+        st.altair_chart(chart, width='stretch')
