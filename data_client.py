@@ -17,7 +17,7 @@ except ImportError:
     IOL_USER = ""
     IOL_PASSWORD = ""
 
-# --- TOKEN ---
+# --- [FUNCIONES DE TOKEN E IOL OMITIDAS POR SER IDÉNTICAS] ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -32,7 +32,6 @@ def _get_iol_token():
         print(f"Error IOL Token (JSON/Otro): {e}")
         return None
 
-# --- PRECIOS EN TIEMPO REAL (IOL) ---
 def _fetch_iol_price(ticker_yahoo, token):
     clean_symbol = ticker_yahoo.upper().replace('.BA', '')
     market = 'bCBA'
@@ -68,9 +67,9 @@ def get_current_prices_iol(tickers_list):
                 continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE DESCARGA SEGURA ---
+# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE DESCARGA SEGURA FINAL ---
 def get_history_yahoo(tickers_list):
-    """Descarga el histórico de cada ticker de forma individual para aislar fallos."""
+    """Descarga el histórico de cada ticker de forma individual y limpia los datos."""
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
@@ -82,15 +81,20 @@ def get_history_yahoo(tickers_list):
     # Bucle secuencial seguro: Si falla uno, el resto continúa
     for t in tickers_filtrados:
         try:
-            # Descarga de un solo ticker
             df = yf.download(tickers=t, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
             
             if not df.empty:
-                # Seleccionamos la columna de cierre (Close o Adj Close)
+                # 1. Limpieza: Forzamos la columna y manejo de error
                 col = 'Close' if 'Close' in df.columns else 'Adj Close'
                 if col in df.columns:
-                    # Renombramos la columna al Ticker y lo agregamos a la lista
                     serie = df[col].rename(t)
+                    
+                    # CRÍTICO: Limpieza de la Serie antes de agregar
+                    serie = pd.to_numeric(serie, errors='coerce')
+                    
+                    # 2. Reemplazamos 0 por NaN para que FFILL funcione y no arruine los cálculos
+                    serie.replace(0, np.nan, inplace=True) 
+                    
                     df_close_list.append(serie)
                 
         except Exception as e:
@@ -100,37 +104,35 @@ def get_history_yahoo(tickers_list):
 
     if not df_close_list: return pd.DataFrame()
 
-    # Concatenamos todas las Series en un DataFrame
+    # 3. Concatenamos, eliminamos el timezone, y rellenamos
     df_final = pd.concat(df_close_list, axis=1)
     
     if not df_final.empty and df_final.index.tz is not None:
         df_final.index = df_final.index.tz_localize(None)
         
-    return df_final.fillna(method='ffill') # Rellenamos los NaN del histórico con el último precio conocido
+    return df_final.fillna(method='ffill')
 
-# --- ORQUESTADOR PRINCIPAL (INVERSIÓN CRÍTICA) ---
+# --- ORQUESTADOR PRINCIPAL (Mantenido) ---
 def get_data(lista_tickers=None):
+    """
+    Combina datos históricos (Yahoo) con precios de hoy (IOL).
+    """
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
 
     today = pd.Timestamp.now().normalize()
     
-    # 1. Obtener precios del día (IOL es más confiable para el "Precio" de hoy)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
     if not dict_precios_hoy:
         return pd.DataFrame()
 
-    # 2. Obtener histórico (Yahoo)
     df_history = get_history_yahoo(tickers_target)
 
-    # 3. Construir DF final
-    
     # Si Yahoo falló, usamos solo los precios de IOL
     if df_history.empty:
         return pd.DataFrame([dict_precios_hoy], index=[today])
 
-    # Si Yahoo no falló, lo fusionamos
     if not df_history.empty and df_history.index[-1].normalize() == today:
         df_history = df_history.iloc[:-1]
 
