@@ -4,7 +4,7 @@ import database
 import manager 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
-import numpy as np # Necesario para np.isnan
+import numpy as np 
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -46,7 +46,7 @@ df_port_raw = database.get_portafolio_df()
 mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
 
 
-# --- Lógica de Estilo (FORMATO DE DECIMALES Y KEYERROR CORREGIDO) ---
+# --- Lógica de Estilo (FORMATO RSI CORREGIDO Y CONSOLIDACIÓN DE COLUMNAS) ---
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
     
@@ -61,21 +61,15 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    # Convertir las columnas numéricas a string con formato (.2f)
-    df_temp = df.copy() # Trabajamos con una copia para evitar SettingWithCopyWarning
+    df_temp = df.copy() 
     
-    # 1. Aplicar formato de precio (CORREGIDO)
-    if 'Precio' in df_temp.columns:
-        # Reemplazamos NaN o None por un guion para que el formato funcione
-        df_temp['Precio'] = df_temp['Precio'].fillna(0.0) 
-        df_temp['Precio'] = df_temp['Precio'].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
-
-    # 2. Aplicar formato de Cantidad (solo en cartera)
-    if is_cartera_panel and 'Cantidad_Total' in df_temp.columns:
-        df_temp['Cantidad_Total'] = df_temp['Cantidad_Total'].fillna(0.0)
-        df_temp['Cantidad_Total'] = df_temp['Cantidad_Total'].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
+    # 1. Aplicar formato de precio y cantidad
+    for col in ['Precio', 'Cantidad_Total']:
+        if col in df_temp.columns:
+            df_temp[col] = df_temp[col].fillna(0.0)
+            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
     
-    # 3. Formato para las columnas porcentuales (incluido RSI)
+    # 2. Formato para las columnas porcentuales (incluido RSI)
     format_dict = {
         'RSI': '{:.2f}', # CORREGIDO: RSI a 2 decimales
         'Caida_30d': '{:.2%}', 
@@ -95,6 +89,9 @@ def get_styled_screener(df, is_cartera_panel=False):
     return df_styled
 
 # --- PANELES ---
+
+# DEFINICIÓN ÚNICA DE COLUMNAS DE SCREENER
+COLS_SCREENER_FULL = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
 
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
@@ -122,17 +119,18 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento (CRÍTICO: Mover sin precio al final - USO DE NP.ISNAN)
+            # 3. Ordenamiento (CRÍTICO: Mover sin precio al final)
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
-            df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], inplace=True)
+            df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], na_position='last', inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
             
             # 4. Columna de Precio Faltante
             df_merged.loc[df_merged['Precio'].isna() | (df_merged['Precio'] == 0), 'Senal'] = 'PRECIO FALTANTE'
 
-            # 5. Columnas a mostrar
-            cols_to_show = ['Precio', 'Cantidad_Total', 'RSI', 'Suma_Caidas', 'Senal', 'Broker_Principal']
-            
+            # 5. Columnas a mostrar (AGREGAMOS LAS COLUMNAS DE TENENCIA Y BROKER)
+            cols_to_show = ['Precio', 'Cantidad_Total'] + COLS_SCREENER_FULL[1:] + ['Broker_Principal']
+            cols_to_show.remove('Var_Ayer') # Quitamos la variación diaria de la tabla de tenencia por simplificación
+
             st.dataframe(get_styled_screener(df_merged[cols_to_show], is_cartera_panel=True), use_container_width=True)
 
 
@@ -152,13 +150,13 @@ for p in paneles:
             
             # Renderizado Condicional: Muestra TODOS los que tienen Precio
             df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
+            df_show = df_show[df_show['Precio'] > 0] # Solo mostramos los que se cargaron realmente
             
             if not df_show.empty:
                 # Ordenar por Señal / Suma_Caídas, mandando los NaN al final
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
-                # Seleccionamos solo las columnas relevantes del screener
-                cols_screener = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
-                st.dataframe(get_styled_screener(df_show[cols_screener], is_cartera_panel=False), use_container_width=True) 
+                # Seleccionamos las columnas FULL SCREENER para los otros paneles
+                st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FULL], is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")
