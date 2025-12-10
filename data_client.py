@@ -3,7 +3,10 @@ import yfinance as yf
 import requests
 import concurrent.futures
 from datetime import datetime, timedelta
-import numpy as np 
+import numpy as np
+import os
+import json 
+import streamlit as st # Necesario para st.cache_data
 
 pd.options.mode.chained_assignment = None 
 IOL_BASE_URL = "https://api.invertironline.com"
@@ -18,16 +21,7 @@ except ImportError:
     IOL_USER = ""
     IOL_PASSWORD = ""
 
-# --- Funciones de Conversión de Nomenclatura Final ---
-def _get_yahoo_symbol(ticker_with_suffix):
-    """Retorna la simbología final para Yahoo (siempre .BA)."""
-    return ticker_with_suffix.upper()
-
-def _get_iol_symbol(ticker_with_suffix):
-    """Retorna la simbología final para IOL (siempre sin sufijo)."""
-    return ticker_with_suffix.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
-
-# --- [TOKEN E IOL OMITIDAS POR SER IDÉNTICAS] ---
+# --- Funciones de TOKEN e IOL omitidas por ser idénticas ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -43,7 +37,7 @@ def _get_iol_token():
         return None
 
 def _fetch_iol_price(ticker_app, token):
-    iol_symbol = _get_iol_symbol(ticker_app) 
+    iol_symbol = ticker_app.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
     market = 'bCBA'
     url = f"{IOL_BASE_URL}/api/v2/{market}/Titulos/{iol_symbol}/Cotizacion"
     headers = {"Authorization": f"Bearer {token}"}
@@ -77,21 +71,25 @@ def get_current_prices_iol(tickers_list):
                 continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE REINTENTO SIMPLE ---
+def _get_yahoo_symbol(ticker_with_suffix):
+    return ticker_with_suffix.upper()
+
+# --- HISTÓRICO (YAHOO) - CACHEADO POR 1 DÍA ---
+@st.cache_data(ttl=timedelta(days=1))
 def get_history_yahoo(tickers_list):
-    """Descarga el histórico de cada ticker de forma individual y limpia los datos."""
+    """Descarga el histórico de cada ticker de forma individual y lo cachea por 1 día."""
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
     print(f"   [Yahoo] Iniciando descarga individual de {len(tickers_filtrados)} activos...")
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
+    
     df_close_list = []
     
     for t_app in tickers_filtrados:
         t_yahoo = _get_yahoo_symbol(t_app)
         serie = None
         
-        # Lógica de Reintento
         for i in range(2): 
             try:
                 df = yf.download(tickers=t_yahoo, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
@@ -102,11 +100,10 @@ def get_history_yahoo(tickers_list):
                         serie = df[col].rename(t_app) 
                         serie = pd.to_numeric(serie, errors='coerce')
                         serie.replace(0, np.nan, inplace=True) 
-                        break # Si funciona, salimos del bucle de reintento
+                        break
                     
             except Exception as e:
-                print(f"Error Yahoo en {t_app} (Intento {i+1}): {e}")
-                time.sleep(2) # Espera 2 segundos antes de reintentar
+                time.sleep(2)
                 
         if serie is not None:
             df_close_list.append(serie)
@@ -120,28 +117,35 @@ def get_history_yahoo(tickers_list):
         
     return df_final.fillna(method='ffill')
 
-# --- ORQUESTADOR PRINCIPAL (Mantenido) ---
+# --- ORQUESTADOR PRINCIPAL (Mantiene IOL en tiempo real) ---
+@st.cache_data(ttl=timedelta(seconds=30)) # CACHÉ MÁS CORTO PARA IOL/FUSION
 def get_data(lista_tickers=None):
+    """
+    Combina datos históricos (Yahoo - 24h Cache) con precios de hoy (IOL - Real Time).
+    """
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
 
     today = pd.Timestamp.now().normalize()
     
+    # 1. Obtener Histórico (Cacheado por 1 día)
+    df_history = get_history_yahoo(tickers_target) # ESTO USA EL CACHÉ GRANDE
+    
+    # 2. Obtener Precios de Hoy (Cacheado por 30 segundos)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
     if not dict_precios_hoy:
         return pd.DataFrame()
 
-    df_history = get_history_yahoo(tickers_target)
-
+    # 3. Fusión
     if df_history.empty:
-        return pd.DataFrame([dict_precios_hoy], index=[today])
-
-    if not df_history.empty and df_history.index[-1].normalize() == today:
-        df_history = df_history.iloc[:-1]
-
-    row_today = pd.DataFrame([dict_precios_hoy], index=[today])
-    df_final = pd.concat([df_history, row_today])
+        df_final = pd.DataFrame([dict_precios_hoy], index=[today])
+    else:
+        if df_history.index[-1].normalize() == today:
+            df_history = df_history.iloc[:-1]
+        row_today = pd.DataFrame([dict_precios_hoy], index=[today])
+        df_final = pd.concat([df_history, row_today])
+    
     df_final.sort_index(inplace=True)
     df_final.ffill(inplace=True) 
     
