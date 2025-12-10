@@ -10,13 +10,17 @@ st.title("📊 Rendimiento del Portafolio")
 
 # --- CRÍTICO: BOTÓN DE ACTUALIZACIÓN LOCAL ---
 if st.button("🔄 Actualizar Datos de Mercado"):
-    # Llama a la nueva función que solo actualiza IOL
+    # Llamada a la función que actualiza SOLO IOL
     manager.actualizar_solo_iol() 
     st.rerun()
 
 if 'precios_actuales' not in st.session_state or st.session_state.precios_actuales.empty:
-    st.warning("⚠️ Sin precios. Actualiza.")
-    st.stop()
+    # CRÍTICO: Si no hay precios, el Dashboard debe forzar la carga de la Cartera.
+    manager.actualizar_solo_iol() # Forzar la carga al inicio
+    st.warning("⚠️ Sin precios. Forzando actualización inicial.")
+    # No st.rerun() aquí para evitar bucle, solo si falla la carga.
+    if st.session_state.precios_actuales.empty: st.stop()
+
 
 # --- CARGA DATOS ---
 try:

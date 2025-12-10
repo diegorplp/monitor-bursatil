@@ -7,10 +7,9 @@ import database
 import config
 import time
 from typing import List
+import numpy as np # Necesario para el np.nan
 
-# ... [Bloque init_session_state idéntico omitido] ...
-
-# --- LÓGICA DE DETECCIÓN DE TICKERS y UPDATE_DATA (idéntico omitido) ---
+# --- INICIALIZACIÓN DE ESTADO (Mantenido) ---
 def init_session_state():
     screener_cols = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Suma_Caidas', 'Senal']
 
@@ -27,26 +26,24 @@ def init_session_state():
     if 'last_update' not in st.session_state: st.session_state.last_update = None
     if 'init_done' not in st.session_state: st.session_state.init_done = False
     
-def get_tickers_a_cargar() -> List[str]:
-    tickers_a_cargar = set()
-    tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
-    return list(tickers_a_cargar)
-
+# --- LÓGICA DE ACTUALIZACIÓN BASE ---
 def update_data(lista_tickers, nombre_panel, silent=False):
     if not lista_tickers: return
 
     if not silent:
         with st.spinner(f"Cargando {nombre_panel}..."):
-            # CRÍTICO: Aquí solo llamamos a la descarga de IOL (para Dash/Portafolio)
+            # CRÍTICO: Si es SOLOS IOL (Dashboard), no llama a Yahoo
             if nombre_panel == "SOLO IOL (Dashboard)":
                 dict_precios_hoy = data_client.get_current_prices_iol(lista_tickers)
                 if not dict_precios_hoy:
                     st.warning(f"⚠️ No se encontraron precios en tiempo real.")
                     return
-                # Actualizar precios en session state y listo
-                st.session_state.precios_actuales.update(dict_precios_hoy)
                 
-                # Recalcular MEP (necesita el precio actual)
+                # Actualizar precios
+                st.session_state.precios_actuales.update(dict_precios_hoy)
+                st.session_state.precios_actuales = st.session_state.precios_actuales.combine_first(pd.Series(dict_precios_hoy))
+                
+                # Recalcular MEP
                 df_raw = pd.DataFrame([dict_precios_hoy])
                 mep, var = market_logic.calcular_mep(df_raw)
                 if mep:
@@ -59,7 +56,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
             # --- Lógica de Descarga COMPLETA (Home) ---
             df_nuevo_raw = data_client.get_data(lista_tickers)
-            
+            # ... [Bloque de procesamiento restante idéntico] ...
             if df_nuevo_raw.empty:
                 st.warning(f"⚠️ No se encontraron datos para {nombre_panel}.")
                 return
@@ -139,20 +136,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.last_update = datetime.now()
 
 
-def actualizar_solo_cartera(silent=False):
-    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
-    init_session_state()
-    
-    t_cartera = database.get_tickers_en_cartera()
-    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
-    t_a_cargar = list(set(t_cartera + t_mep))
-    
-    if not t_a_cargar:
-        t_a_cargar = get_tickers_a_cargar()
-        
-    update_data(t_a_cargar, "Portafolio en Tenencia", silent=silent)
-
-
 def actualizar_solo_iol():
     """NUEVA FUNCIÓN: Actualiza solo IOL (precios de Portafolio + MEP) para DASHBOARD."""
     init_session_state()
@@ -170,17 +153,45 @@ def actualizar_solo_iol():
 
 
 def actualizar_todo(silent=False):
-    """Función para HOME (Carga SOLO MEP al inicio o Portafolio + MEP en auto-refresh)."""
+    """Función para HOME y DASHBOARD (Carga SOLO MEP al inicio)."""
     init_session_state()
 
     if not st.session_state.init_done:
         t_a_cargar = get_tickers_a_cargar()
         update_data(t_a_cargar, "MEP Base", silent=silent)
     else:
+        # Aquí es donde fallamos, si init_done=True, intentamos actualizar la cartera completa.
         actualizar_solo_cartera(silent=silent)
 
 
-# --- WIDGET DE SIDEBAR (idéntico omitido) ---
+# ... [Bloque de funciones restantes idéntico omitido] ...
+def get_tickers_a_cargar() -> List[str]:
+    tickers_a_cargar = set()
+    tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
+    return list(tickers_a_cargar)
+
+def actualizar_solo_cartera(silent=False):
+    init_session_state()
+    
+    t_cartera = database.get_tickers_en_cartera()
+    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+    t_a_cargar = list(set(t_cartera + t_mep))
+    
+    if not t_a_cargar:
+        t_a_cargar = get_tickers_a_cargar()
+        
+    update_data(t_a_cargar, "Portafolio en Tenencia", silent=silent)
+
+def actualizar_panel_individual(nombre_panel, lista_tickers):
+    init_session_state()
+    
+    t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+    t_cartera = database.get_tickers_en_cartera()
+    
+    t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
+    
+    update_data(t_a_cargar, nombre_panel, silent=False)
+
 def mostrar_boton_actualizar():
     init_session_state()
     st.sidebar.markdown("---")
