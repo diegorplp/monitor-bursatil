@@ -17,17 +17,8 @@ except ImportError:
     DIAS_HISTORIAL = 200
     IOL_USER = ""
     IOL_PASSWORD = ""
-    
-# --- Función de Conversión para cada API ---
-def _get_yahoo_symbol(ticker_with_suffix):
-    """Retorna la simbología para Yahoo Finance (Generalmente Ticker.BA)."""
-    return ticker_with_suffix.upper()
 
-def _get_iol_symbol(ticker_with_suffix):
-    """Retorna la simbología para IOL (Generalmente Ticker SIN sufijo)."""
-    return ticker_with_suffix.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
-
-# --- TOKEN ---
+# --- Funciones de TOKEN e IOL omitidas por ser idénticas ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -42,10 +33,8 @@ def _get_iol_token():
         print(f"Error IOL Token (JSON/Otro): {e}")
         return None
 
-# --- PRECIOS EN TIEMPO REAL (IOL) ---
-def _fetch_iol_price(ticker_app, token):
-    # Usa la función de conversión para IOL
-    iol_symbol = _get_iol_symbol(ticker_app) 
+def _fetch_iol_price(ticker_yahoo, token):
+    iol_symbol = ticker_yahoo.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
     market = 'bCBA'
     url = f"{IOL_BASE_URL}/api/v2/{market}/Titulos/{iol_symbol}/Cotizacion"
     headers = {"Authorization": f"Bearer {token}"}
@@ -53,9 +42,9 @@ def _fetch_iol_price(ticker_app, token):
         r = requests.get(url, headers=headers, timeout=3) 
         r.raise_for_status()
         data = r.json()
-        return ticker_app, float(data['ultimoPrecio'])
+        return ticker_yahoo, float(data['ultimoPrecio'])
     except Exception as e:
-        return ticker_app, None
+        return ticker_yahoo, None
 
 def get_current_prices_iol(tickers_list):
     token = _get_iol_token()
@@ -79,39 +68,43 @@ def get_current_prices_iol(tickers_list):
                 continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE DESCARGA SEGURA FINAL ---
+# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE FALLBACK EN NOMENCLATURA ---
 def get_history_yahoo(tickers_list):
-    """Descarga el histórico de cada ticker de forma individual y limpia los datos."""
+    """Descarga el histórico de cada ticker probando múltiples nomenclaturas."""
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
-    print(f"   [Yahoo] Iniciando descarga individual de {len(tickers_filtrados)} activos...")
+    print(f"   [Yahoo] Iniciando descarga individual de {len(tickers_filtrados)} activos con fallback...")
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
-    
     df_close_list = []
     
     for t_app in tickers_filtrados:
-        # Usa la función de conversión para Yahoo
-        t_yahoo = _get_yahoo_symbol(t_app)
-        try:
-            # Descarga de un solo ticker
-            df = yf.download(tickers=t_yahoo, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
-            
-            if not df.empty:
-                col = 'Close' if 'Close' in df.columns else 'Adj Close'
-                if col in df.columns:
-                    # Usamos el nombre de la APP (t_app) para el Series
-                    serie = df[col].rename(t_app) 
-                    
-                    serie = pd.to_numeric(serie, errors='coerce')
-                    serie.replace(0, np.nan, inplace=True) 
-                    
-                    df_close_list.append(serie)
+        # 1. Definir la lista de pruebas de nomenclatura
+        t_base = t_app.upper().replace('.BA', '').replace('.L', '').replace('.C', '')
+        # Probamos: .BA -> Sin sufijo (RAW) -> .L (Para Cedears)
+        simbolos_a_probar = [f"{t_base}.BA", t_base, f"{t_base}.L"]
+        
+        serie = None
+        for t_yahoo in simbolos_a_probar:
+            try:
+                df = yf.download(tickers=t_yahoo, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
                 
-        except Exception as e:
-            # Registramos el fallo para el ticker específico
-            print(f"Error Yahoo en {t_app}: {e}")
-            continue
+                if not df.empty:
+                    col = 'Close' if 'Close' in df.columns else 'Adj Close'
+                    if col in df.columns:
+                        # CRÍTICO: Renombrar siempre a la nomenclatura original de la APP
+                        serie = df[col].rename(t_app) 
+                        serie = pd.to_numeric(serie, errors='coerce')
+                        serie.replace(0, np.nan, inplace=True) 
+                        print(f"   Yahoo: OK para {t_app} usando {t_yahoo}")
+                        break # Si funciona, salimos del bucle de pruebas
+                        
+            except Exception as e:
+                print(f"   Yahoo: Falló {t_app} con {t_yahoo}")
+                continue # Si falla, probamos el siguiente
+
+        if serie is not None:
+            df_close_list.append(serie)
 
     if not df_close_list: return pd.DataFrame()
 
