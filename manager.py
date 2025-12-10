@@ -27,8 +27,9 @@ def init_session_state():
     
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
-    """Solo carga los tickers necesarios para calcular el MEP."""
+    """Retorna Portafolio + MEP (USADO solo para botones y actualización de cartera)."""
     tickers_a_cargar = set()
+    tickers_a_cargar.update(database.get_tickers_en_cartera())
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
     return list(tickers_a_cargar)
 
@@ -69,16 +70,11 @@ def update_data(lista_tickers, nombre_panel, silent=False):
                  if idx in df_total.index:
                      df_total.loc[idx] = df_nuevo_screener.loc[idx]
             
-            # CRÍTICO: ORDENAMIENTO
             if not df_total.empty:
                 cols_sort = ['Senal', 'Suma_Caidas']
-                
-                # Paso 1: Asegurar que las columnas existen para evitar KeyError
                 for col in cols_sort:
                     if col not in df_total.columns:
-                        df_total[col] = pd.NA # Inicializar con NaN si falta
-                        
-                # Paso 2: Ordenar
+                        df_total[col] = pd.NA
                 df_total.sort_values(by=cols_sort, ascending=[True, False], na_position='last', inplace=True)
 
             st.session_state.oportunidades = df_total
@@ -111,12 +107,11 @@ def update_data(lista_tickers, nombre_panel, silent=False):
              if idx in df_total.index:
                  df_total.loc[idx] = df_nuevo_screener.loc[idx]
         
-        # CRÍTICO: ORDENAMIENTO (SILENCIOSO)
         if not df_total.empty:
             cols_sort = ['Senal', 'Suma_Caidas']
             for col in cols_sort:
                 if col not in df_total.columns:
-                    df_total[col] = pd.NA # Inicializar con NaN si falta
+                    df_total[col] = pd.NA
             df_total.sort_values(by=cols_sort, ascending=[True, False], na_position='last', inplace=True)
 
         st.session_state.oportunidades = df_total
@@ -124,17 +119,20 @@ def update_data(lista_tickers, nombre_panel, silent=False):
 
 # --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
+    """Actualiza un solo panel (Lider, Bonos, etc.)"""
     init_session_state()
     
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
     t_cartera = database.get_tickers_en_cartera()
     
+    # La descarga incluye el panel solicitado + cartera + MEP
     t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
     
     update_data(t_a_cargar, nombre_panel, silent=False)
 
 
 def actualizar_solo_cartera(silent=False):
+    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
     init_session_state()
     
     t_cartera = database.get_tickers_en_cartera()
@@ -142,13 +140,25 @@ def actualizar_solo_cartera(silent=False):
     t_a_cargar = list(set(t_cartera + t_mep))
     
     if not t_a_cargar:
-        t_a_cargar = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+        t_a_cargar = get_tickers_a_cargar() # Solo MEP
         
     update_data(t_a_cargar, "Portafolio en Tenencia", silent=silent)
 
 
 def actualizar_todo(silent=False):
-    actualizar_solo_cartera(silent=silent)
+    """
+    Función para HOME y DASHBOARD (Carga SOLO MEP al inicio. 
+    Usa actualizar_solo_cartera en la próxima ronda de auto-refresh).
+    """
+    init_session_state()
+
+    # Si es la primera carga (init_done=False)
+    if not st.session_state.init_done:
+        t_a_cargar = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
+        update_data(t_a_cargar, "MEP Base", silent=silent)
+    else:
+        # Si ya se hizo la carga inicial, el auto-refresh llama a la carga normal (Portafolio + MEP)
+        actualizar_solo_cartera(silent=silent)
 
 
 # --- WIDGET DE SIDEBAR ---

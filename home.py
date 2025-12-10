@@ -19,9 +19,9 @@ if AUTO_REFRESH_DISPONIBLE:
     st_autorefresh(interval=60 * 1000, key="market_refresh")
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
-# CRÍTICO: La carga inicial ahora es 'actualizar_todo' (solo MEP al inicio)
+# CRÍTICO: La carga inicial ahora llama a actualizar_todo (que solo carga MEP)
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
-    manager.actualizar_todo(silent=True) # Carga solo MEP
+    manager.actualizar_todo(silent=True) 
     st.session_state.init_done = True
     st.rerun()
 
@@ -98,7 +98,7 @@ COLS_SCREENER_FULL = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Sum
 
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
-    # CRÍTICO: La carga de cartera se hace con un botón que llama a actualizar_solo_cartera
+    # CRÍTICO: El botón ahora llama a actualizar_solo_cartera
     if st.button("Refrescar Cartera"):
         manager.actualizar_solo_cartera(silent=False) 
         st.rerun()
