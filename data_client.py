@@ -47,7 +47,6 @@ def _fetch_iol_price(ticker_yahoo, token):
         return ticker_yahoo, None
 
 def get_current_prices_iol(tickers_list):
-    """Descarga concurrente de precios IOL (Máx 5 hilos)."""
     token = _get_iol_token()
     if not token: 
         print("Falla al obtener token IOL.")
@@ -55,10 +54,8 @@ def get_current_prices_iol(tickers_list):
     
     print(f"   [IOL] Buscando precios en tiempo real para {len(tickers_list)} activos...")
     precios_iol = {}
-    # REDUCCIÓN CRÍTICA DE WORKERS
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: 
         futures = {executor.submit(_fetch_iol_price, t, token): t for t in tickers_list}
-        # TimeOut global
         for future in concurrent.futures.as_completed(futures, timeout=15): 
             try:
                 t, price = future.result()
@@ -73,7 +70,6 @@ def get_current_prices_iol(tickers_list):
 
 # --- HISTÓRICO (YAHOO) ---
 def get_history_yahoo(tickers_list):
-    """Descarga histórico de Yahoo con filtro de tickers y días."""
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
@@ -81,10 +77,10 @@ def get_history_yahoo(tickers_list):
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
     try:
-        # Nota: yf.download usa concurrencia interna. No podemos controlarla fácilmente,
-        # pero reducimos los tickers y aumentamos el timeout.
-        df = yf.download(tickers=tickers_filtrados, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=20) # threads=False forzará la descarga secuencial
+        # threads=False para reducir archivos abiertos
+        df = yf.download(tickers=tickers_filtrados, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=20) 
         
+        # Lógica de limpieza de Yahoo (Mantenida)
         df_close = pd.DataFrame()
         if len(tickers_filtrados) == 1:
             t = tickers_filtrados[0]
@@ -93,7 +89,8 @@ def get_history_yahoo(tickers_list):
         else:
             for t in tickers_filtrados:
                 try:
-                    if t in df.columns.levels[0]: df_close[t] = df[t]['Close']
+                    # Usamos 'Adj Close' como fallback
+                    if t in df.columns.levels[0]: df_close[t] = df[t].get('Close', df[t].get('Adj Close', pd.NA))
                 except: pass
         
         if not df_close.empty and df_close.index.tz is not None:
@@ -103,21 +100,34 @@ def get_history_yahoo(tickers_list):
         print(f"Error Yahoo: {e}")
         return pd.DataFrame()
 
-# --- ORQUESTADOR PRINCIPAL ---
+# --- ORQUESTADOR PRINCIPAL (INVERSIÓN CRÍTICA) ---
 def get_data(lista_tickers=None):
+    """
+    Combina datos históricos (Yahoo) con precios de hoy (IOL).
+    CRÍTICO: Prioriza IOL y no falla si Yahoo lo hace.
+    """
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
 
-    df_history = get_history_yahoo(tickers_target)
+    today = pd.Timestamp.now().normalize()
+    
+    # 1. Obtener precios del día (IOL es más confiable para el "Precio" de hoy)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
-    today = pd.Timestamp.now().normalize()
-
-    if df_history.empty:
-        if dict_precios_hoy:
-            return pd.DataFrame([dict_precios_hoy], index=[today])
+    # 2. Si no hay precios, no podemos calcular indicadores (retorno temprano)
+    if not dict_precios_hoy:
         return pd.DataFrame()
 
+    # 3. Obtener histórico (Yahoo)
+    df_history = get_history_yahoo(tickers_target)
+
+    # 4. Construir DF final
+    
+    # Si Yahoo falló, usamos solo los precios de IOL (el caso más común de falla)
+    if df_history.empty:
+        return pd.DataFrame([dict_precios_hoy], index=[today])
+
+    # Si Yahoo no falló, lo fusionamos
     if not df_history.empty and df_history.index[-1].normalize() == today:
         df_history = df_history.iloc[:-1]
 

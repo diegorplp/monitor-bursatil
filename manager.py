@@ -27,7 +27,10 @@ def init_session_state():
     
 # --- LÓGICA DE DETECCIÓN DE TICKERS ---
 def get_tickers_a_cargar() -> List[str]:
-    """Solo carga Portafolio y MEP (USADO PARA LA CARGA INICIAL/AUTO-REFRESH)."""
+    """
+    Función que antes cargaba todo. Ahora solo carga Portafolio + MEP.
+    (La carga inicial se delega a actualizar_solo_cartera)
+    """
     tickers_a_cargar = set()
     tickers_a_cargar.update(database.get_tickers_en_cartera())
     tickers_a_cargar.update(['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA'])
@@ -79,7 +82,7 @@ def update_data(lista_tickers, nombre_panel, silent=False):
             st.session_state.last_update = datetime.now()
             st.success(f"✅ Datos actualizados.")
             
-    else: # Si silent=True, procesa sin spinner
+    else: # Si silent=True, procesa sin spinner (auto-refresh)
         df_nuevo_raw = data_client.get_data(lista_tickers)
         if df_nuevo_raw.empty: return
 
@@ -113,22 +116,22 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.oportunidades = df_total
         st.session_state.last_update = datetime.now()
 
+# --- FUNCIONES DE ORQUESTACIÓN ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
-    """ACTUALIZADA: Ahora lista_tickers contiene SOLO el panel a actualizar."""
+    """Actualiza un solo panel (Lider, Bonos, etc.)"""
     init_session_state()
     
     t_mep = ['AL30.BA', 'AL30D.BA', 'GD30.BA', 'GD30D.BA']
     t_cartera = database.get_tickers_en_cartera()
     
-    # CRÍTICO: La descarga debe incluir el panel solicitado + cartera + MEP
-    # Esto asegura que al cargar 'Lider', no se borren los precios de la cartera
+    # La descarga incluye el panel solicitado + cartera + MEP
     t_a_cargar = list(set(lista_tickers + t_mep + t_cartera))
     
     update_data(t_a_cargar, nombre_panel, silent=False)
 
 
 def actualizar_solo_cartera(silent=False):
-    """Actualiza solo Portafolio y MEP (para Portafolio_y_Ventas)."""
+    """NUEVA FUNCIÓN: Actualiza solo Portafolio y MEP."""
     init_session_state()
     
     t_cartera = database.get_tickers_en_cartera()
@@ -136,23 +139,15 @@ def actualizar_solo_cartera(silent=False):
     t_a_cargar = list(set(t_cartera + t_mep))
     
     if not t_a_cargar:
-        if not silent: st.warning("No hay activos en cartera para actualizar.")
+        if not silent: st.warning("No hay tickers para cargar.")
         return
 
     update_data(t_a_cargar, "Portafolio en Tenencia", silent=silent)
 
 
 def actualizar_todo(silent=False):
-    """Función para HOME y DASHBOARD (Actualiza solo Portafolio y MEP)."""
-    init_session_state()
-    
-    t_a_cargar = get_tickers_a_cargar()
-    
-    if not t_a_cargar:
-        if not silent: st.warning("No hay tickers para cargar.")
-        return
-
-    update_data(t_a_cargar, "Mercado Global", silent=silent)
+    """Función para HOME y DASHBOARD (Ahora solo llama a la carga eficiente)."""
+    actualizar_solo_cartera(silent=silent)
 
 
 # --- WIDGET DE SIDEBAR ---
