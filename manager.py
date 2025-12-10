@@ -127,52 +127,6 @@ def update_data(lista_tickers, nombre_panel, silent=False):
         st.session_state.last_update = datetime.now()
 
 
-# --- LÓGICA DE DIAGNÓSTICO (MOVILIZADA DESDE data_client.py) ---
-def run_diagnostic_test(tickers_to_test):
-    """Ejecuta pruebas de conexión y nomenclatura para un grupo de tickers."""
-    
-    iol_token = data_client._get_iol_token()
-    
-    results = []
-    
-    if not iol_token:
-        results.append("❌ ERROR CRÍTICO: No se pudo obtener el token de IOL. Verifica usuario/contraseña en st.secrets.")
-        return results
-
-    
-    for base_ticker in tickers_to_test:
-        test_variants = {
-            f"{base_ticker}.BA": "Bolsa Argentina (.BA)",
-            f"{base_ticker}": "Sin sufijo (RAW)",
-            f"{base_ticker}.L": "Cedear (.L - Yahoo)"
-        }
-        
-        results.append(f"\n--- Probando Ticker Base: {base_ticker} ---")
-        
-        for ticker_test, desc in test_variants.items():
-            # 1. Test IOL (Precio Actual)
-            iol_symbol = ticker_test.upper().replace('.BA', '').replace('.C', '').replace('.L', '')
-            url_iol = f"{IOL_BASE_URL}/api/v2/bCBA/Titulos/{iol_symbol}/Cotizacion"
-            headers = {"Authorization": f"Bearer {iol_token}"}
-            
-            iol_price = "❌ FALLA"
-            try:
-                r = requests.get(url_iol, headers=headers, timeout=3)
-                if r.status_code == 200:
-                    iol_price = r.json().get('ultimoPrecio', 'NO PRICE')
-                elif r.status_code == 404:
-                    iol_price = "❌ 404 (No Encontrado)"
-            except: pass
-            
-            # 2. Test Yahoo (Histórico)
-            df_yahoo = yf.download(tickers=ticker_test, start=datetime.now() - timedelta(days=50), interval='1d', auto_adjust=True, progress=False, threads=False, timeout=5)
-            yahoo_ok = not df_yahoo.empty
-            
-            results.append(f"  > {desc} ({ticker_test}): IOL Price: {iol_price}, Yahoo Histórico: {'✅ OK' if yahoo_ok else '❌ FALLA'}")
-
-    return results
-
-
 # --- FUNCIONES DE ORQUESTACIÓN y WIDGET DE SIDEBAR (idéntico omitido) ---
 def actualizar_panel_individual(nombre_panel, lista_tickers):
     init_session_state()

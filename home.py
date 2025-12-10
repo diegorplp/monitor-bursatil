@@ -160,24 +160,3 @@ for p in paneles:
                 st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FINAL], is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")
-
-# Lista de tickers para la prueba.
-TEST_TICKERS_DIAG = [
-    'A3',      # Acción Local
-    'NFLX',    # Cedear
-    'MSFT',    # Cedear
-    'AL30'     # Bono
-]
-
-# --- PANEL DE DIAGNÓSTICO DE CONECTIVIDAD (NUEVO) ---
-with st.expander("🛠️ Diagnóstico de Conexión y Simbología", expanded=False):
-    st.caption("Usa este panel para verificar qué nomenclatura funciona para IOL y Yahoo Finance.")
-    
-    if st.button("▶️ Ejecutar Test de Conexión (Lento)"):
-        with st.spinner("Ejecutando test en IOL y Yahoo Finance..."):
-            # LLAMADA CORREGIDA
-            test_results = manager.run_diagnostic_test(TEST_TICKERS_DIAG)
-            st.session_state['test_results_diag'] = test_results
-            
-    if 'test_results_diag' in st.session_state:
-        st.code('\n'.join(st.session_state['test_results_diag']), language='text')
