@@ -46,9 +46,11 @@ df_port_raw = database.get_portafolio_df()
 mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty else []
 
 
-# --- Lógica de Estilo (FORMATO RSI CORREGIDO Y CONSOLIDACIÓN DE COLUMNAS) ---
+# --- Lógica de Estilo (APLICACIÓN DE FORMATO CORREGIDA) ---
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
+    
+    df_temp = df.copy() 
     
     def highlight_buy(row):
         senal = row.get('Senal')
@@ -61,30 +63,37 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    df_temp = df.copy() 
-    
-    # 1. Aplicar formato de precio y cantidad
-    for col in ['Precio', 'Cantidad_Total']:
-        if col in df_temp.columns:
-            df_temp[col] = df_temp[col].fillna(0.0)
-            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
-    
-    # 2. Formato para las columnas porcentuales (incluido RSI)
+    # 1. Formato para las columnas porcentuales/decimales (RSI, Caídas)
     format_dict = {
         'RSI': '{:.2f}', # CORREGIDO: RSI a 2 decimales
-        'Caida_30d': '{:.2%}', 
-        'Caida_5d': '{:.2%}', 
+        'Caida_30d': '{:.2%}', # CORREGIDO: Caída a Porcentaje
+        'Caida_5d': '{:.2%}', # CORREGIDO: Caída a Porcentaje
         'Suma_Caidas': '{:.2%}',
         'Var_Ayer': '{:.2%}'
     }
 
-    # Aplicar el estilo
+    # Aplicar el estilo de color
     df_styled = df_temp.style.apply(highlight_buy, axis=1)
     
-    # Aplicar el formato solo a las columnas existentes
+    # Aplicar el formato numérico (Esto se hace primero)
     for col, fmt in format_dict.items():
         if col in df_styled.columns:
             df_styled = df_styled.format({col: fmt}, na_rep="--")
+            
+    # 2. Conversión a string con formato (SOLO Precio y Cantidad)
+    # Esto debe ir DESPUÉS de aplicar todos los formatos numéricos
+    for col in ['Precio', 'Cantidad_Total']:
+        if col in df_temp.columns:
+            # Reemplazamos NaN o None por un guion para que el formato funcione
+            df_temp[col] = df_temp[col].fillna(0.0)
+            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
+            
+    # CRÍTICO: Reemplazar el df_styled con el df_temp para que los cambios de Precio/Cantidad se vean
+    # Como ya aplicamos el formato a las columnas numéricas, simplemente devolvemos el df_styled
+    # con las columnas de string (Precio/Cantidad) ya modificadas en df_temp
+    for col in ['Precio', 'Cantidad_Total']:
+         if col in df_temp.columns:
+             df_styled.data[col] = df_temp[col]
             
     return df_styled
 
@@ -127,7 +136,7 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
             # 4. Columna de Precio Faltante
             df_merged.loc[df_merged['Precio'].isna() | (df_merged['Precio'] == 0), 'Senal'] = 'PRECIO FALTANTE'
 
-            # 5. Columnas a mostrar (AGREGAMOS LAS COLUMNAS DE TENENCIA Y BROKER)
+            # 5. Columnas a mostrar
             cols_to_show = ['Precio', 'Cantidad_Total'] + COLS_SCREENER_FULL[1:] + ['Broker_Principal']
             cols_to_show.remove('Var_Ayer') # Quitamos la variación diaria de la tabla de tenencia por simplificación
 
@@ -156,7 +165,7 @@ for p in paneles:
                 # Ordenar por Señal / Suma_Caídas, mandando los NaN al final
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
-                # Seleccionamos las columnas FULL SCREENER para los otros paneles
+                # Seleccionamos solo las columnas relevantes del screener
                 st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FULL], is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")
