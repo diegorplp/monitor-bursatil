@@ -19,8 +19,9 @@ if AUTO_REFRESH_DISPONIBLE:
     st_autorefresh(interval=60 * 1000, key="market_refresh")
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
+# CRÍTICO: La carga inicial ahora es 'actualizar_todo' (solo MEP al inicio)
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
-    manager.actualizar_solo_cartera(silent=True) 
+    manager.actualizar_todo(silent=True) # Carga solo MEP
     st.session_state.init_done = True
     st.rerun()
 
@@ -50,7 +51,6 @@ mis_tickers = df_port_raw['Ticker'].unique().tolist() if not df_port_raw.empty e
 def get_styled_screener(df, is_cartera_panel=False):
     if df.empty: return df
     
-    # 1. Copia y limpieza de NaN/None a 0 para el cálculo de estilo
     df_temp = df.copy() 
     
     def highlight_buy(row):
@@ -64,18 +64,20 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    # 2. Formatos numéricos (ESTO APLICA AL DF BASE)
+    # 1. Aplicar formato de precio y cantidad
+    for col in ['Precio', 'Cantidad_Total']:
+        if col in df_temp.columns:
+            df_temp[col] = df_temp[col].fillna(0.0)
+            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
+    
+    # 2. Formato para las columnas porcentuales/decimales (RSI, Caídas)
     format_dict = {
-        'Precio': '{:,.2f}', 
-        'RSI': '{:.2f}', # CORREGIDO: RSI a 2 decimales
+        'RSI': '{:.2f}', 
         'Caida_30d': '{:.2%}', 
         'Caida_5d': '{:.2%}', 
         'Suma_Caidas': '{:.2%}',
         'Var_Ayer': '{:.2%}'
     }
-
-    if is_cartera_panel and 'Cantidad_Total' in df_temp.columns:
-        format_dict['Cantidad_Total'] = '{:,.2f}'
 
     # Aplicar el estilo de color
     df_styled = df_temp.style.apply(highlight_buy, axis=1)
@@ -83,6 +85,10 @@ def get_styled_screener(df, is_cartera_panel=False):
     # Aplicar el formato numérico
     df_styled = df_styled.format(format_dict, na_rep="--")
     
+    for col in ['Precio', 'Cantidad_Total']:
+         if col in df_temp.columns:
+             df_styled.data[col] = df_temp[col]
+            
     return df_styled
 
 # --- PANELES ---
@@ -92,8 +98,9 @@ COLS_SCREENER_FULL = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Sum
 
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
+    # CRÍTICO: La carga de cartera se hace con un botón que llama a actualizar_solo_cartera
     if st.button("Refrescar Cartera"):
-        manager.actualizar_todo(silent=False) # Llama a la carga global para el Home
+        manager.actualizar_solo_cartera(silent=False) 
         st.rerun()
     
     if df_port_raw.empty:
@@ -116,7 +123,7 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento (CRÍTICO: Mover sin precio al final)
+            # 3. Ordenamiento
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], na_position='last', inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
@@ -126,8 +133,6 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
 
             # 5. Columnas a mostrar
             cols_to_show = ['Precio', 'Cantidad_Total'] + COLS_SCREENER_FULL[1:] + ['Broker_Principal']
-            
-            # Limpieza final: Quitamos la variación diaria de la tabla de tenencia por simplificación
             if 'Var_Ayer' in cols_to_show: cols_to_show.remove('Var_Ayer') 
 
             st.dataframe(get_styled_screener(df_merged[cols_to_show], is_cartera_panel=True), use_container_width=True)
@@ -149,13 +154,10 @@ for p in paneles:
             
             # Renderizado Condicional: Muestra TODOS los que tienen Precio
             df_show = st.session_state.oportunidades.loc[st.session_state.oportunidades.index.isin(all_tickers_in_panel)]
-            df_show = df_show[df_show['Precio'] > 0] # Solo mostramos los que se cargaron realmente
             
             if not df_show.empty:
-                # Ordenar por Señal / Suma_Caídas, mandando los NaN al final
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
-                # Seleccionamos solo las columnas relevantes del screener
                 st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FULL], is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")
