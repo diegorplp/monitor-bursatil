@@ -68,44 +68,48 @@ def get_current_prices_iol(tickers_list):
                 continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) ---
+# --- HISTÓRICO (YAHOO) - ESTRATEGIA DE DESCARGA SEGURA ---
 def get_history_yahoo(tickers_list):
+    """Descarga el histórico de cada ticker de forma individual para aislar fallos."""
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
-    print(f"   [Yahoo] Descargando histórico para {len(tickers_filtrados)} activos...")
+    print(f"   [Yahoo] Iniciando descarga individual de {len(tickers_filtrados)} activos...")
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
-    try:
-        # threads=False para reducir archivos abiertos
-        df = yf.download(tickers=tickers_filtrados, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=20) 
+    df_close_list = []
+    
+    # Bucle secuencial seguro: Si falla uno, el resto continúa
+    for t in tickers_filtrados:
+        try:
+            # Descarga de un solo ticker
+            df = yf.download(tickers=t, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
+            
+            if not df.empty:
+                # Seleccionamos la columna de cierre (Close o Adj Close)
+                col = 'Close' if 'Close' in df.columns else 'Adj Close'
+                if col in df.columns:
+                    # Renombramos la columna al Ticker y lo agregamos a la lista
+                    serie = df[col].rename(t)
+                    df_close_list.append(serie)
+                
+        except Exception as e:
+            # Registramos el fallo para el ticker específico
+            print(f"Error Yahoo en {t}: {e}")
+            continue
+
+    if not df_close_list: return pd.DataFrame()
+
+    # Concatenamos todas las Series en un DataFrame
+    df_final = pd.concat(df_close_list, axis=1)
+    
+    if not df_final.empty and df_final.index.tz is not None:
+        df_final.index = df_final.index.tz_localize(None)
         
-        # Lógica de limpieza de Yahoo (Mantenida)
-        df_close = pd.DataFrame()
-        if len(tickers_filtrados) == 1:
-            t = tickers_filtrados[0]
-            col = 'Close' if 'Close' in df.columns else 'Adj Close'
-            if col in df.columns: df_close[t] = df[col]
-        else:
-            for t in tickers_filtrados:
-                try:
-                    # Usamos 'Adj Close' como fallback
-                    if t in df.columns.levels[0]: df_close[t] = df[t].get('Close', df[t].get('Adj Close', pd.NA))
-                except: pass
-        
-        if not df_close.empty and df_close.index.tz is not None:
-            df_close.index = df_close.index.tz_localize(None)
-        return df_close
-    except Exception as e:
-        print(f"Error Yahoo: {e}")
-        return pd.DataFrame()
+    return df_final.fillna(method='ffill') # Rellenamos los NaN del histórico con el último precio conocido
 
 # --- ORQUESTADOR PRINCIPAL (INVERSIÓN CRÍTICA) ---
 def get_data(lista_tickers=None):
-    """
-    Combina datos históricos (Yahoo) con precios de hoy (IOL).
-    CRÍTICO: Prioriza IOL y no falla si Yahoo lo hace.
-    """
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
 
@@ -114,16 +118,15 @@ def get_data(lista_tickers=None):
     # 1. Obtener precios del día (IOL es más confiable para el "Precio" de hoy)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
-    # 2. Si no hay precios, no podemos calcular indicadores (retorno temprano)
     if not dict_precios_hoy:
         return pd.DataFrame()
 
-    # 3. Obtener histórico (Yahoo)
+    # 2. Obtener histórico (Yahoo)
     df_history = get_history_yahoo(tickers_target)
 
-    # 4. Construir DF final
+    # 3. Construir DF final
     
-    # Si Yahoo falló, usamos solo los precios de IOL (el caso más común de falla)
+    # Si Yahoo falló, usamos solo los precios de IOL
     if df_history.empty:
         return pd.DataFrame([dict_precios_hoy], index=[today])
 
