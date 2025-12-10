@@ -19,9 +19,8 @@ if AUTO_REFRESH_DISPONIBLE:
     st_autorefresh(interval=60 * 1000, key="market_refresh")
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
-# CRÍTICO: La carga inicial ahora llama a actualizar_todo (que solo carga MEP)
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
-    manager.actualizar_todo(silent=True) 
+    manager.actualizar_todo(silent=True)
     st.session_state.init_done = True
     st.rerun()
 
@@ -64,13 +63,7 @@ def get_styled_screener(df, is_cartera_panel=False):
              
         return [''] * len(row)
 
-    # 1. Aplicar formato de precio y cantidad
-    for col in ['Precio', 'Cantidad_Total']:
-        if col in df_temp.columns:
-            df_temp[col] = df_temp[col].fillna(0.0)
-            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
-    
-    # 2. Formato para las columnas porcentuales/decimales (RSI, Caídas)
+    # 1. Formato para las columnas porcentuales/decimales (RSI, Caídas)
     format_dict = {
         'RSI': '{:.2f}', 
         'Caida_30d': '{:.2%}', 
@@ -85,9 +78,13 @@ def get_styled_screener(df, is_cartera_panel=False):
     # Aplicar el formato numérico
     df_styled = df_styled.format(format_dict, na_rep="--")
     
+    # 2. Conversión a string para Precio y Cantidad (Esto debe ir después)
     for col in ['Precio', 'Cantidad_Total']:
-         if col in df_temp.columns:
-             df_styled.data[col] = df_temp[col]
+        if col in df_temp.columns:
+            # Forzar la conversión a float para evitar que el string o None rompa el apply
+            df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0.0) 
+            df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
+            df_styled.data[col] = df_temp[col]
             
     return df_styled
 
@@ -98,9 +95,8 @@ COLS_SCREENER_FULL = ['Precio', 'RSI', 'Caida_30d', 'Caida_5d', 'Var_Ayer', 'Sum
 
 # A. PANEL CARTERA (AGRUPACIÓN POR TICKER)
 with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
-    # CRÍTICO: El botón ahora llama a actualizar_solo_cartera
     if st.button("Refrescar Cartera"):
-        manager.actualizar_solo_cartera(silent=False) 
+        manager.actualizar_todo(silent=False)
         st.rerun()
     
     if df_port_raw.empty:
@@ -123,7 +119,11 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento
+            # 3. Ordenamiento (CRÍTICO: SOLUCIÓN AL BUG DE LA LÍNEA)
+            # Primero, forzamos Precio a numérico para que el np.isnan funcione.
+            df_merged['Precio'] = pd.to_numeric(df_merged['Precio'], errors='coerce') 
+            
+            # Ahora, la lógica de ordenamiento no falla
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], na_position='last', inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
@@ -158,6 +158,7 @@ for p in paneles:
             if not df_show.empty:
                 df_show.sort_values(by=['Senal', 'Suma_Caidas'], ascending=[True, False], na_position='last', inplace=True)
                 
-                st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FULL], is_cartera_panel=False), use_container_width=True) 
+                COLS_SCREENER_FINAL = [c for c in COLS_SCREENER_FULL if c in df_show.columns]
+                st.dataframe(get_styled_screener(df_show[COLS_SCREENER_FINAL], is_cartera_panel=False), use_container_width=True) 
             else:
                  st.caption("Pulse Cargar para obtener datos.")
