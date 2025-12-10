@@ -4,9 +4,9 @@ import database
 import manager 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
-import data_client
 import numpy as np 
-import pandas as pd # CRÍTICO: Asegurar la importación de pandas para el scope
+import pandas as pd
+# import data_client (Ya no es necesario)
 
 # --- CONFIGURACIÓN ---
 AUTO_REFRESH_DISPONIBLE = True
@@ -22,7 +22,7 @@ if AUTO_REFRESH_DISPONIBLE:
 
 # --- LÓGICA DE CARGA INICIAL/AUTO-REFRESH ---
 if not st.session_state.init_done or (st.session_state.last_update and (datetime.now() - st.session_state.last_update).total_seconds() > 65):
-    manager.actualizar_todo(silent=True)
+    manager.actualizar_todo(silent=True) 
     st.session_state.init_done = True
     st.rerun()
 
@@ -83,8 +83,7 @@ def get_styled_screener(df, is_cartera_panel=False):
     # 2. Conversión a string para Precio y Cantidad (Esto debe ir después)
     for col in ['Precio', 'Cantidad_Total']:
         if col in df_temp.columns:
-            # Reemplazar NaN o None con 0 antes de formatear
-            df_temp[col] = df_temp[col].fillna(0.0) 
+            df_temp[col] = df_temp[col].fillna(0.0)
             df_temp[col] = df_temp[col].apply(lambda x: f"{x:,.2f}" if x != 0 else '--')
             df_styled.data[col] = df_temp[col]
             
@@ -121,12 +120,8 @@ with st.expander("📂 Transacciones Recientes / En Cartera", expanded=True):
                 left_index=True, right_index=True, how='left'
             )
             
-            # 3. Ordenamiento (CRÍTICO: CONVERSIÓN A NUMÉRICO PARA ORDENAR)
-            # Intentar convertir la columna 'Precio' a numérica antes de ordenar
-            # Esto evita el error si Price es un objeto con None/str/np.nan
-            if df_merged['Precio'].dtype != 'float64':
-                 df_merged['Precio'] = pd.to_numeric(df_merged['Precio'], errors='coerce').fillna(0.0) 
-
+            # 3. Ordenamiento
+            df_merged['Precio'] = pd.to_numeric(df_merged['Precio'], errors='coerce').fillna(0.0) 
             df_merged['Sort_Key'] = df_merged['Precio'].apply(lambda x: 1 if np.isnan(x) or x == 0 else 0)
             df_merged.sort_values(by=['Sort_Key', 'Senal', 'RSI'], ascending=[True, True, False], na_position='last', inplace=True)
             df_merged.drop(columns=['Sort_Key'], inplace=True)
@@ -166,17 +161,13 @@ for p in paneles:
             else:
                  st.caption("Pulse Cargar para obtener datos.")
 
-# --- EN home.py (Agregar al final del archivo) ---
-
 # Lista de tickers para la prueba.
 TEST_TICKERS_DIAG = [
-    'A3',      
-    'NFLX',    
-    'MSFT',    
-    'AL30'     
+    'A3',      # Acción Local
+    'NFLX',    # Cedear
+    'MSFT',    # Cedear
+    'AL30'     # Bono
 ]
-
-st.divider()
 
 # --- PANEL DE DIAGNÓSTICO DE CONECTIVIDAD (NUEVO) ---
 with st.expander("🛠️ Diagnóstico de Conexión y Simbología", expanded=False):
@@ -184,11 +175,9 @@ with st.expander("🛠️ Diagnóstico de Conexión y Simbología", expanded=Fal
     
     if st.button("▶️ Ejecutar Test de Conexión (Lento)"):
         with st.spinner("Ejecutando test en IOL y Yahoo Finance..."):
-            # Llama a la nueva función
-            test_results = data_client.run_diagnostic_test(TEST_TICKERS_DIAG)
-            st.session_state['test_results'] = test_results
+            # LLAMADA CORREGIDA
+            test_results = manager.run_diagnostic_test(TEST_TICKERS_DIAG)
+            st.session_state['test_results_diag'] = test_results
             
-    if 'test_results' in st.session_state:
-        st.code('\n'.join(st.session_state['test_results']), language='text')
-
-# NOTA: Debes agregar 'import data_client' al inicio de home.py si no lo tienes.
+    if 'test_results_diag' in st.session_state:
+        st.code('\n'.join(st.session_state['test_results_diag']), language='text')

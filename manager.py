@@ -223,23 +223,3 @@ def mostrar_boton_actualizar():
     if st.session_state.mep_valor:
         st.sidebar.metric("MEP", f"${st.session_state.mep_valor:,.0f}")
 
-# Lista de tickers para la prueba.
-TEST_TICKERS_DIAG = [
-    'A3',      # Acción Local
-    'NFLX',    # Cedear
-    'MSFT',    # Cedear
-    'AL30'     # Bono
-]
-
-# --- PANEL DE DIAGNÓSTICO DE CONECTIVIDAD (NUEVO) ---
-with st.expander("🛠️ Diagnóstico de Conexión y Simbología", expanded=False):
-    st.caption("Usa este panel para verificar qué nomenclatura funciona para IOL y Yahoo Finance.")
-    
-    if st.button("▶️ Ejecutar Test de Conexión (Lento)"):
-        with st.spinner("Ejecutando test en IOL y Yahoo Finance..."):
-            # CRÍTICO: La llamada al manager se hace directamente.
-            test_results = manager.run_diagnostic_test(TEST_TICKERS_DIAG)
-            st.session_state['test_results_diag'] = test_results
-            
-    if 'test_results_diag' in st.session_state:
-        st.code('\n'.join(st.session_state['test_results_diag']), language='text')
