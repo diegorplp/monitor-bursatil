@@ -14,7 +14,7 @@ def _es_bono(ticker):
         if any(char.isdigit() for char in t): return True
     return False
 
-# --- CÁLCULO DE COMISIONES ---
+# --- CÁLCULO DE COMISIONES (LÓGICA VETA CORREGIDA) ---
 def calcular_comision_real(monto_bruto, broker, es_bono=False):
     broker = str(broker).upper().strip()
     iva = config.IVA
@@ -29,14 +29,26 @@ def calcular_comision_real(monto_bruto, broker, es_bono=False):
         tasa_derechos = derechos_acciones
         multiplicador_iva = iva
         
+    # 1. CASO VETA (SIN MINIMO)
     if broker == 'VETA':
         tasa_veta = config.COMISIONES.get('VETA', 0.0015)
-        comision_base = max(veta_min, monto_bruto * tasa_veta)
-        costo_total = (comision_base * multiplicador_iva) + (monto_bruto * tasa_derechos)
+        
+        comision_base = monto_bruto * tasa_veta
+        # El boleto muestra 0.02% D. Mercado y 0.03% D. Registro
+        tasa_derechos_m = 0.0002 
+        tasa_derechos_r = 0.0003
+        
+        derechos_m = monto_bruto * tasa_derechos_m
+        derechos_r = monto_bruto * tasa_derechos_r
+        
+        # Fórmula: (Comisión Base * IVA) + Derechos + Registro
+        costo_total = (comision_base * multiplicador_iva) + derechos_m + derechos_r 
         return costo_total
     
-    tasa = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
-    comision_base = monto_bruto * tasa
+    # 2. CASO GENERAL (Cocos, IOL, Bull)
+    tasa_base = config.COMISIONES.get(broker, config.COMISIONES.get('DEFAULT', 0.0045))
+    
+    comision_base = monto_bruto * tasa_base
     costo_derechos = monto_bruto * tasa_derechos
     
     if es_bono:

@@ -15,9 +15,9 @@ except ImportError:
     IVA = 1.21
     DERECHOS_ACCIONES = 0.0005
     DERECHOS_BONOS = 0.0001
-    VETA_MINIMO = 50
+    VETA_MINIMO = 50 # Mantenemos por si el valor es usado en otro lado, pero no se usará en VETA
 
-# --- UTILIDADES ---
+# --- UTILIDADES (Omisión de código idéntico) ---
 def _clean_number_str(val):
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
@@ -50,27 +50,49 @@ def _es_bono(ticker):
     return False
 
 def _calcular_comision_real(broker, monto_bruto, es_bono=False):
+    """
+    Cálculo AJUSTADO A FACTURA VETA/COCOS.
+    VETA: Base 0.15% (SIN MINIMO) + IVA + Derechos fijos.
+    COCOS/Gral: Base 0.45% + IVA + Derechos fijos.
+    """
     broker = str(broker).upper().strip()
+    
+    # 1. Definir tasas de impuestos y derechos
     if es_bono:
         tasa_derechos = DERECHOS_BONOS
-        multiplicador_iva = 1.0
+        multiplicador_iva = 1.0 # Bonos no pagan IVA
     else:
         tasa_derechos = DERECHOS_ACCIONES
         multiplicador_iva = IVA
         
+    # 2. Definir Tasa Base (Comisión)
     if broker == 'VETA':
-        tasa_veta = COMISIONES.get('VETA', 0.0015)
-        comision_base = max(VETA_MINIMO, monto_bruto * tasa_veta)
-        costo_total = (comision_base + (monto_bruto * tasa_derechos)) * multiplicador_iva
+        tasa_base = COMISIONES.get('VETA', 0.0015) # Usamos 0.0015
+        # Comisiones separadas de VETA para reflejar factura
+        tasa_derechos_m = 0.0002 # D. Mercado (0.02%)
+        tasa_derechos_r = 0.0003 # D. Registro (0.03%)
+        
+        # LÓGICA VETA (Sin Mínimo)
+        comision_base = monto_bruto * tasa_base
+        derechos_m = monto_bruto * tasa_derechos_m
+        derechos_r = monto_bruto * tasa_derechos_r
+        
+        # Fórmula: (Comisión Base * 1.21) + Derechos + Registro (NO PAGA IVA SOBRE DERECHOS)
+        # Esto es lo que se deduce del boleto: 36.27 * 1.21 = 43.8 + 4.83 + 7.24
+        costo_total = (comision_base * multiplicador_iva) + derechos_m + derechos_r 
         return costo_total
     
-    tasa = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
-    comision_base = monto_bruto * tasa
+    # 3. CASO GENERAL (COCOS, BULL, IOL)
+    tasa_base = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
+    
+    comision_base = monto_bruto * tasa_base
     derechos = monto_bruto * tasa_derechos
     
+    # Fórmula Cocos (Acciones): (Comisión + Derechos) * IVA. (Usamos la fórmula que da exacto para Cocos)
     if es_bono:
         costo_total = comision_base + derechos
     else:
+        # ACCIONES: La fórmula es (Comision Base + Derechos) * IVA (Si el broker no es VETA)
         costo_total = (comision_base + derechos) * multiplicador_iva
         
     return costo_total
