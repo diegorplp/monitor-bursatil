@@ -27,7 +27,7 @@ except ImportError:
 CACHE_FILE = "data_cache/historical_data.json"
 CACHE_DIR = "data_cache"
 
-# --- TOKEN E IOL (Idénticos) ---
+# --- TOKEN E IOL ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -63,13 +63,13 @@ def get_current_prices_iol(tickers_list):
             except: continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - CON SALIDA EN PANTALLA ---
+# --- HISTÓRICO (YAHOO) - VERSIÓN FINAL (BATCH + SIN SESIÓN MANUAL) ---
 def get_history_yahoo(tickers_list):
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
-    # DEBUG EN PANTALLA (Para ver si entra aquí)
-    st.toast(f"📥 Descargando {len(tickers_filtrados)} activos...", icon="⏳")
+    # Notificación visual discreta
+    st.toast(f"📥 Actualizando {len(tickers_filtrados)} activos...", icon="☁️")
     
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
@@ -82,33 +82,26 @@ def get_history_yahoo(tickers_list):
         batch_tickers.append(t_yahoo)
         map_yahoo_app[t_yahoo] = t_app 
 
-    # SESIÓN REQUERIDA POR YAHOO
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    })
-
     try:
-        # Descarga con threads=False para máxima estabilidad
+        # CORRECCIÓN: Eliminamos 'session=session'. Dejamos que YFinance use su lógica interna.
+        # Mantenemos descarga masiva (Batch) para evitar Rate Limit.
         df_all = yf.download(
             tickers=" ".join(batch_tickers), 
             start=start_date, 
             group_by='ticker', 
             auto_adjust=True, 
             prepost=False, 
-            threads=False, # Desactivado para evitar errores de hilos en Streamlit Cloud
+            threads=False, # Hilos desactivados para estabilidad en Cloud
             progress=False, 
-            timeout=30,
-            session=session
+            timeout=30
         )
         
         if df_all.empty: 
-            st.error("Yahoo devolvió datos vacíos (Posible bloqueo IP o error de ticker).")
             return pd.DataFrame()
 
         df_close_list = []
         
-        # Lógica de extracción (1 ticker vs N tickers)
+        # Procesamiento Robusto
         if len(batch_tickers) == 1:
             t_yahoo = batch_tickers[0]
             col_name = 'Close' if 'Close' in df_all.columns else 'Adj Close'
@@ -127,7 +120,6 @@ def get_history_yahoo(tickers_list):
                         df_close_list.append(serie)
 
         if not df_close_list:
-            st.warning("Estructura de datos no reconocida en respuesta de Yahoo.")
             return pd.DataFrame()
 
         df_final = pd.concat(df_close_list, axis=1)
@@ -137,43 +129,52 @@ def get_history_yahoo(tickers_list):
         if not df_final.empty and df_final.index.tz is not None:
             df_final.index = df_final.index.tz_localize(None)
             
-        st.toast(f"✅ Datos históricos recibidos ({df_final.shape[1]} activos)", icon="ok")
         return df_final.fillna(method='ffill')
 
     except Exception as e:
-        st.error(f"Error crítico Yahoo: {str(e)}")
+        print(f"Error Yahoo: {e}") # Log en consola solamente
         return pd.DataFrame()
 
-# --- ORQUESTADOR PRINCIPAL (MODIFICADO PARA IGNORAR CACHÉ HOY) ---
+# --- ORQUESTADOR PRINCIPAL ---
 def get_data(lista_tickers=None):
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
     today = pd.Timestamp.now().normalize()
     
-    # 1. LEER CACHÉ JSON -> ¡DESACTIVADO TEMPORALMENTE PARA REPARACIÓN!
-    # (Comentamos este bloque para obligar a que se ejecute la descarga nueva)
-    # if os.path.exists(CACHE_FILE):
-    #     try:
-    #         with open(CACHE_FILE, 'r') as f:
-    #             cache_data = json.load(f)
-    #             cache_date = datetime.strptime(cache_data['date'], '%Y-%m-%d').date()
-    #             if cache_date == today.date():
-    #                 # ... (Código original de lectura de caché) ...
-    #                 pass 
-    #     except: pass
+    # 1. LEER CACHÉ JSON (REACTIVADO)
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r') as f:
+                cache_data = json.load(f)
+                cache_date = datetime.strptime(cache_data['date'], '%Y-%m-%d').date()
+                if cache_date == today.date():
+                    # Si el caché es de hoy, intentamos usarlo
+                    df_history = pd.read_json(io.StringIO(cache_data['data'])) 
+                    
+                    dict_precios_hoy = get_current_prices_iol(tickers_target)
+                    
+                    # Combinación
+                    row_today = pd.DataFrame([dict_precios_hoy], index=[today])
+                    df_final = pd.concat([df_history, row_today])
+                    df_final.sort_index(inplace=True)
+                    df_final.ffill(inplace=True) 
+                    
+                    cutoff = datetime.now() - timedelta(days=DIAS_HISTORIAL)
+                    return df_final[df_final.index >= cutoff]
+        except: pass
 
-    # 2. DESCARGA REAL
+    # 2. DESCARGA REAL (Si falla caché o cambia día)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
-    # Llamamos a Yahoo (ahora veremos los mensajes en pantalla)
+    # Yahoo
     df_history = get_history_yahoo(tickers_target)
 
+    # Lógica de unión
     if df_history.empty:
-        # Si Yahoo falla, al menos mostramos el precio de hoy de IOL
         if not dict_precios_hoy: return pd.DataFrame()
         df_final = pd.DataFrame([dict_precios_hoy], index=[today])
     else:
-        # Combinar histórico + hoy
+        # Aseguramos no duplicar la fecha de hoy si Yahoo ya la trajo
         if not df_history.empty and df_history.index[-1].normalize() == today: 
             df_history = df_history.iloc[:-1]
             
@@ -185,60 +186,6 @@ def get_data(lista_tickers=None):
     
     if df_final.empty: return pd.DataFrame()
 
-    df_final.sort_index(inplace=True)
-    df_final.ffill(inplace=True) 
-    
-    cutoff = datetime.now() - timedelta(days=DIAS_HISTORIAL)
-    df_final = df_final[df_final.index >= cutoff]
-
-    # 3. GUARDAR CACHÉ (Sobrescribimos el caché corrupto con el nuevo bueno)
-    try:
-        if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
-        cache_to_save = {'date': today.strftime('%Y-%m-%d'), 'data': df_history.to_json()}
-        with open(CACHE_FILE, 'w') as f: json.dump(cache_to_save, f)
-        print("Cache actualizado exitosamente.")
-    except: pass
-
-    return df_final
-    tickers_target = lista_tickers if lista_tickers else TICKERS
-    if not tickers_target: return pd.DataFrame()
-    today = pd.Timestamp.now().normalize()
-    
-    # 1. LEER CACHÉ JSON
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, 'r') as f:
-                cache_data = json.load(f)
-                cache_date = datetime.strptime(cache_data['date'], '%Y-%m-%d').date()
-                if cache_date == today.date():
-                    df_history = pd.read_json(io.StringIO(cache_data['data'])) 
-                    print("   [Cache] Histórico cargado de JSON.")
-                    
-                    dict_precios_hoy = get_current_prices_iol(tickers_target)
-                    if not dict_precios_hoy: return pd.DataFrame() 
-                    
-                    row_today = pd.DataFrame([dict_precios_hoy], index=[today])
-                    df_final = pd.concat([df_history, row_today])
-                    df_final.sort_index(inplace=True)
-                    df_final.ffill(inplace=True) 
-                    
-                    cutoff = datetime.now() - timedelta(days=DIAS_HISTORIAL)
-                    return df_final[df_final.index >= cutoff]
-        except: pass
-
-    # 2. DESCARGA REAL (Si no hay caché)
-    dict_precios_hoy = get_current_prices_iol(tickers_target)
-    if not dict_precios_hoy: return pd.DataFrame()
-
-    df_history = get_history_yahoo(tickers_target)
-
-    if df_history.empty:
-        df_final = pd.DataFrame([dict_precios_hoy], index=[today])
-    else:
-        if df_history.index[-1].normalize() == today: df_history = df_history.iloc[:-1]
-        row_today = pd.DataFrame([dict_precios_hoy], index=[today])
-        df_final = pd.concat([df_history, row_today])
-    
     df_final.sort_index(inplace=True)
     df_final.ffill(inplace=True) 
     
