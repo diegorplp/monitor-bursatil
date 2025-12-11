@@ -9,6 +9,7 @@ import json
 import streamlit as st 
 import time 
 import io
+import random # IMPORTANTE: Para la aleatoriedad
 
 pd.options.mode.chained_assignment = None 
 IOL_BASE_URL = "https://api.invertironline.com"
@@ -24,7 +25,7 @@ except ImportError:
     IOL_PASSWORD = ""
 
 # --- CONFIGURACIÓN DE CACHÉ ---
-CACHE_FILE = "data_cache/historical_data_v3.json" # V3 para asegurar limpieza
+CACHE_FILE = "data_cache/historical_data_v4.json" # V4 para purgar la caché incompleta
 CACHE_DIR = "data_cache"
 
 # --- TOKEN E IOL ---
@@ -63,14 +64,14 @@ def get_current_prices_iol(tickers_list):
             except: continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - ESTRATEGIA CHUNKING (ANTI-RATE LIMIT) ---
+# --- HISTÓRICO (YAHOO) - MODO SIGILOSO (HUMAN MIMIC) ---
 def get_history_yahoo(tickers_list):
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
-    # 1. Preparar mapa de nombres
+    # 1. Preparar mapa
     map_yahoo_app = {}
     all_yahoo_tickers = []
     for t_app in tickers_filtrados:
@@ -79,18 +80,21 @@ def get_history_yahoo(tickers_list):
         all_yahoo_tickers.append(t_yahoo)
         map_yahoo_app[t_yahoo] = t_app 
 
-    # 2. Dividir en Chunks (Lotes) de 10 para no saturar
-    CHUNK_SIZE = 10
+    # 2. CHUNKING SIGILOSO: Lotes muy pequeños (3)
+    CHUNK_SIZE = 3 
     chunks = [all_yahoo_tickers[i:i + CHUNK_SIZE] for i in range(0, len(all_yahoo_tickers), CHUNK_SIZE)]
     
-    st.toast(f"📡 Descargando {len(all_yahoo_tickers)} activos en {len(chunks)} lotes...", icon="⏳")
+    st.toast(f"🕵️ Recuperando datos ({len(chunks)} fases)...", icon="⏳")
     
     full_dfs_list = []
     
     for i, chunk in enumerate(chunks):
         try:
-            # Pausa táctica entre lotes
-            if i > 0: time.sleep(1.5)
+            # 3. PAUSA ALEATORIA (Jitter): Entre 2 y 5 segundos
+            # Esto evita que Yahoo detecte un patrón mecánico
+            if i > 0: 
+                sleep_time = random.uniform(2.0, 5.0)
+                time.sleep(sleep_time)
             
             df_chunk = yf.download(
                 tickers=" ".join(chunk), 
@@ -105,10 +109,8 @@ def get_history_yahoo(tickers_list):
             
             if df_chunk.empty: continue
 
-            # Procesar este lote
             chunk_series = []
             
-            # Caso 1 ticker en el chunk
             if len(chunk) == 1:
                 t_yahoo = chunk[0]
                 col_name = 'Close' if 'Close' in df_chunk.columns else 'Adj Close'
@@ -116,7 +118,6 @@ def get_history_yahoo(tickers_list):
                     serie = df_chunk[col_name].copy()
                     serie.name = map_yahoo_app[t_yahoo]
                     chunk_series.append(serie)
-            # Caso N tickers
             else:
                 for t_yahoo in chunk:
                     if t_yahoo in df_chunk.columns:
@@ -135,10 +136,8 @@ def get_history_yahoo(tickers_list):
             continue
 
     if not full_dfs_list:
-        st.toast("⚠️ No se pudieron obtener datos históricos.", icon="⚠️")
         return pd.DataFrame()
 
-    # 3. Unir todo
     df_final = pd.concat(full_dfs_list, axis=1)
     df_final = df_final.apply(pd.to_numeric, errors='coerce')
     df_final.replace(0, np.nan, inplace=True)
@@ -146,7 +145,6 @@ def get_history_yahoo(tickers_list):
     if not df_final.empty and df_final.index.tz is not None:
         df_final.index = df_final.index.tz_localize(None)
     
-    # CORRECCIÓN WARNING: Usar ffill() en lugar de fillna(method='ffill')
     return df_final.ffill()
 
 # --- ORQUESTADOR PRINCIPAL ---
@@ -155,7 +153,7 @@ def get_data(lista_tickers=None):
     if not tickers_target: return pd.DataFrame()
     today = pd.Timestamp.now().normalize()
     
-    # 1. LEER CACHÉ
+    # 1. LEER CACHÉ (v4)
     usar_cache = False
     if os.path.exists(CACHE_FILE):
         try:
@@ -170,11 +168,11 @@ def get_data(lista_tickers=None):
                         st.toast("📂 Datos cargados de caché", icon="✅")
         except: pass
 
-    # 2. DESCARGA REAL (Si no hay caché)
+    # 2. DESCARGA REAL
     if not usar_cache:
         df_history = get_history_yahoo(tickers_target)
         
-        # Guardar caché solo si tenemos datos útiles
+        # Guardar caché solo si tenemos datos y NO está vacío
         if not df_history.empty and len(df_history) > 10:
             try:
                 if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
@@ -182,7 +180,7 @@ def get_data(lista_tickers=None):
                 with open(CACHE_FILE, 'w') as f: json.dump(cache_to_save, f)
             except: pass
 
-    # 3. MERGE CON IOL
+    # 3. MERGE IOL
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
     if df_history.empty:
@@ -201,7 +199,7 @@ def get_data(lista_tickers=None):
     if df_final.empty: return pd.DataFrame()
 
     df_final.sort_index(inplace=True)
-    df_final.ffill(inplace=True) # CORRECCIÓN WARNING
+    df_final.ffill(inplace=True) 
     
     cutoff = datetime.now() - timedelta(days=DIAS_HISTORIAL)
     df_final = df_final[df_final.index >= cutoff]
