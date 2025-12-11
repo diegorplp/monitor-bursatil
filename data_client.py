@@ -63,15 +63,17 @@ def get_current_prices_iol(tickers_list):
             except: continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - ARREGLADO (BATCH + SESSION) ---
+# --- HISTÓRICO (YAHOO) - MODO DEBUG & ROBUSTO ---
 def get_history_yahoo(tickers_list):
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
-    print(f"   [Yahoo] Descargando {len(tickers_filtrados)} activos (Batch Mode)...")
+    print(f"--- INICIO DEBUG YAHOO ---")
+    print(f"1. Tickers solicitados ({len(tickers_filtrados)}): {tickers_filtrados}")
+
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
-    # 1. Preparar lista masiva y mapa de renombre
+    # 1. Preparar lista y mapa
     map_yahoo_app = {}
     batch_tickers = []
     
@@ -80,23 +82,21 @@ def get_history_yahoo(tickers_list):
         if not t_yahoo.endswith(".BA"):
             t_yahoo += ".BA"
         batch_tickers.append(t_yahoo)
-        map_yahoo_app[t_yahoo] = t_app # Guardamos relación MSFT.BA -> MSFT
+        map_yahoo_app[t_yahoo] = t_app 
 
-    if not batch_tickers: return pd.DataFrame()
-
-    # 2. Crear sesión con User-Agent para evitar bloqueo 403/429
+    # 2. Sesión
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     })
 
     try:
-        # 3. Descarga ÚNICA (Batch)
-        # Esto reduce N peticiones a 1 sola, eliminando el Rate Limit
+        # 3. Descarga (Forzamos group_by='ticker' que es más predecible para depurar)
+        print(f"2. Ejecutando yf.download para: {batch_tickers}")
         df_all = yf.download(
             tickers=" ".join(batch_tickers), 
             start=start_date, 
-            group_by='column', 
+            group_by='ticker',  # CAMBIO: Usar 'ticker' agrupa mejor para iterar si falla la estructura
             auto_adjust=True, 
             prepost=False, 
             threads=True, 
@@ -105,42 +105,66 @@ def get_history_yahoo(tickers_list):
             session=session
         )
         
-        if df_all.empty: return pd.DataFrame()
+        print(f"3. Shape recibido: {df_all.shape}")
+        
+        if df_all.empty: 
+            print("!!! ERROR: DataFrame vacío devuelto por Yahoo.")
+            return pd.DataFrame()
 
-        # 4. Extracción de columna 'Close' y mapeo de nombres
-        # Yahoo devuelve MultiIndex si hay >1 ticker: ('Close', 'MSFT.BA')
-        # O Index simple si es solo 1 ticker.
+        # 4. Extracción Robusta
+        df_close_list = []
         
-        target_col = 'Close' if 'Close' in df_all.columns.get_level_values(0) else 'Adj Close'
-        
+        # Caso A: Un solo ticker (DataFrame simple)
         if len(batch_tickers) == 1:
-            # Caso 1 solo ticker: DataFrame plano
-            if target_col in df_all.columns:
-                df_final = df_all[[target_col]]
-                df_final.columns = [map_yahoo_app[batch_tickers[0]]]
+            ticker_y = batch_tickers[0]
+            col_name = 'Close' if 'Close' in df_all.columns else 'Adj Close'
+            if col_name in df_all.columns:
+                serie = df_all[col_name].copy()
+                serie.name = map_yahoo_app[ticker_y]
+                df_close_list.append(serie)
             else:
-                return pd.DataFrame()
-        else:
-            # Caso Múltiples tickers: MultiIndex
-            try:
-                df_final = df_all[target_col].copy()
-            except KeyError:
-                return pd.DataFrame()
-            
-            # Renombrar columnas de 'MSFT.BA' a 'MSFT' según el mapa
-            df_final.rename(columns=map_yahoo_app, inplace=True)
+                print(f"!!! Falta columna Close/Adj Close para único ticker. Cols: {df_all.columns}")
 
-        # 5. Limpieza (Misma lógica que tenías antes)
+        # Caso B: Múltiples tickers (MultiIndex: Ticker -> Precio)
+        else:
+            # df_all columns levels: (Ticker, PriceType) debido a group_by='ticker'
+            for t_yahoo in batch_tickers:
+                try:
+                    # Intentar acceder al ticker en el nivel 0
+                    if t_yahoo in df_all.columns:
+                        df_sub = df_all[t_yahoo]
+                        col_name = 'Close' if 'Close' in df_sub.columns else 'Adj Close'
+                        
+                        if col_name in df_sub.columns:
+                            serie = df_sub[col_name].copy()
+                            serie.name = map_yahoo_app[t_yahoo]
+                            df_close_list.append(serie)
+                        else:
+                            print(f"Warning: Sin precio de cierre para {t_yahoo}")
+                    else:
+                        print(f"Warning: Ticker {t_yahoo} no encontrado en columnas devueltas.")
+                except Exception as e:
+                    print(f"Error procesando {t_yahoo}: {e}")
+                    continue
+
+        if not df_close_list:
+            print("!!! ERROR: No se pudo extraer ninguna serie de precios válida.")
+            return pd.DataFrame()
+
+        df_final = pd.concat(df_close_list, axis=1)
+        
+        # 5. Limpieza final
         df_final = df_final.apply(pd.to_numeric, errors='coerce')
         df_final.replace(0, np.nan, inplace=True)
         
         if not df_final.empty and df_final.index.tz is not None:
             df_final.index = df_final.index.tz_localize(None)
             
+        print(f"--- FIN DEBUG YAHOO (Éxito parcial/total: {df_final.shape}) ---")
         return df_final.fillna(method='ffill')
 
     except Exception as e:
-        print(f"   [Yahoo Error] {e}")
+        print(f"!!! EXCEPTION CRITICA EN YAHOO: {e}")
         return pd.DataFrame()
 
 # --- ORQUESTADOR PRINCIPAL (CACHEADO JSON) ---
