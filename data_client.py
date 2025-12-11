@@ -63,47 +63,85 @@ def get_current_prices_iol(tickers_list):
             except: continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - OPTIMIZADO PARA NO BLOQUEAR IP ---
+# --- HISTÓRICO (YAHOO) - ARREGLADO (BATCH + SESSION) ---
 def get_history_yahoo(tickers_list):
     tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
     if not tickers_filtrados: return pd.DataFrame()
     
-    print(f"   [Yahoo] Descargando {len(tickers_filtrados)} activos (Modo Seguro)...")
+    print(f"   [Yahoo] Descargando {len(tickers_filtrados)} activos (Batch Mode)...")
     start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
     
-    df_close_list = []
+    # 1. Preparar lista masiva y mapa de renombre
+    map_yahoo_app = {}
+    batch_tickers = []
     
     for t_app in tickers_filtrados:
-        # ESTRATEGIA DE UN SOLO TIRO: Usamos siempre .BA (Ganador del diagnóstico)
-        # Esto reduce las peticiones a la mitad o tercio.
         t_yahoo = t_app.upper()
         if not t_yahoo.endswith(".BA"):
             t_yahoo += ".BA"
+        batch_tickers.append(t_yahoo)
+        map_yahoo_app[t_yahoo] = t_app # Guardamos relación MSFT.BA -> MSFT
 
-        try:
-            # Sin reintentos agresivos
-            df = yf.download(tickers=t_yahoo, start=start_date, group_by='ticker', auto_adjust=True, prepost=False, threads=False, progress=False, timeout=10) 
-            
-            if not df.empty:
-                col = 'Close' if 'Close' in df.columns else 'Adj Close'
-                if col in df.columns:
-                    serie = df[col].rename(t_app) 
-                    serie = pd.to_numeric(serie, errors='coerce')
-                    # Convertir 0 a NaN para que ffill funcione
-                    serie.replace(0, np.nan, inplace=True) 
-                    df_close_list.append(serie)
-                
-        except Exception:
-            # Si falla, simplemente pasamos al siguiente para no detener el flujo
-            continue
+    if not batch_tickers: return pd.DataFrame()
 
-    if not df_close_list: return pd.DataFrame()
+    # 2. Crear sesión con User-Agent para evitar bloqueo 403/429
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
 
-    df_final = pd.concat(df_close_list, axis=1)
-    if not df_final.empty and df_final.index.tz is not None:
-        df_final.index = df_final.index.tz_localize(None)
+    try:
+        # 3. Descarga ÚNICA (Batch)
+        # Esto reduce N peticiones a 1 sola, eliminando el Rate Limit
+        df_all = yf.download(
+            tickers=" ".join(batch_tickers), 
+            start=start_date, 
+            group_by='column', 
+            auto_adjust=True, 
+            prepost=False, 
+            threads=True, 
+            progress=False, 
+            timeout=20,
+            session=session
+        )
         
-    return df_final.fillna(method='ffill')
+        if df_all.empty: return pd.DataFrame()
+
+        # 4. Extracción de columna 'Close' y mapeo de nombres
+        # Yahoo devuelve MultiIndex si hay >1 ticker: ('Close', 'MSFT.BA')
+        # O Index simple si es solo 1 ticker.
+        
+        target_col = 'Close' if 'Close' in df_all.columns.get_level_values(0) else 'Adj Close'
+        
+        if len(batch_tickers) == 1:
+            # Caso 1 solo ticker: DataFrame plano
+            if target_col in df_all.columns:
+                df_final = df_all[[target_col]]
+                df_final.columns = [map_yahoo_app[batch_tickers[0]]]
+            else:
+                return pd.DataFrame()
+        else:
+            # Caso Múltiples tickers: MultiIndex
+            try:
+                df_final = df_all[target_col].copy()
+            except KeyError:
+                return pd.DataFrame()
+            
+            # Renombrar columnas de 'MSFT.BA' a 'MSFT' según el mapa
+            df_final.rename(columns=map_yahoo_app, inplace=True)
+
+        # 5. Limpieza (Misma lógica que tenías antes)
+        df_final = df_final.apply(pd.to_numeric, errors='coerce')
+        df_final.replace(0, np.nan, inplace=True)
+        
+        if not df_final.empty and df_final.index.tz is not None:
+            df_final.index = df_final.index.tz_localize(None)
+            
+        return df_final.fillna(method='ffill')
+
+    except Exception as e:
+        print(f"   [Yahoo Error] {e}")
+        return pd.DataFrame()
 
 # --- ORQUESTADOR PRINCIPAL (CACHEADO JSON) ---
 def get_data(lista_tickers=None):
