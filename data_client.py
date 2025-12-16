@@ -9,7 +9,10 @@ import json
 import streamlit as st 
 import time 
 import io
-import random # IMPORTANTE: Para la aleatoriedad
+import random 
+
+# CRÍTICO: Importamos database para leer la nueva fuente de datos histórica
+import database 
 
 pd.options.mode.chained_assignment = None 
 IOL_BASE_URL = "https://api.invertironline.com"
@@ -24,11 +27,11 @@ except ImportError:
     IOL_USER = ""
     IOL_PASSWORD = ""
 
-# --- CONFIGURACIÓN DE CACHÉ ---
-CACHE_FILE = "data_cache/historical_data_v4.json" # V4 para purgar la caché incompleta
+# --- CONFIGURACIÓN DE CACHÉ (Mantenido solo por si es usado en otro lado, pero no para historial) ---
+CACHE_FILE = "data_cache/historical_data_v4.json" 
 CACHE_DIR = "data_cache"
 
-# --- TOKEN E IOL ---
+# --- TOKEN E IOL (No Modificado) ---
 def _get_iol_token():
     if not IOL_USER or not IOL_PASSWORD: return None
     try:
@@ -64,129 +67,34 @@ def get_current_prices_iol(tickers_list):
             except: continue
     return precios_iol
 
-# --- HISTÓRICO (YAHOO) - MODO SIGILOSO (HUMAN MIMIC) ---
+# --- HISTÓRICO (YAHOO) - ELIMINADO/DEPRECADO (Devuelve vacío) ---
 def get_history_yahoo(tickers_list):
-    tickers_filtrados = [t for t in tickers_list if t not in BONOS_SKIP_YAHOO]
-    if not tickers_filtrados: return pd.DataFrame()
-    
-    start_date = datetime.now() - timedelta(days=DIAS_HISTORIAL + 10) 
-    
-    # 1. Preparar mapa
-    map_yahoo_app = {}
-    all_yahoo_tickers = []
-    for t_app in tickers_filtrados:
-        t_yahoo = t_app.upper()
-        if not t_yahoo.endswith(".BA"): t_yahoo += ".BA"
-        all_yahoo_tickers.append(t_yahoo)
-        map_yahoo_app[t_yahoo] = t_app 
+    # La aplicación ya no debe llamar a Yahoo, lo hacemos en la VM y leemos de Sheets.
+    return pd.DataFrame()
 
-    # 2. CHUNKING SIGILOSO: Lotes muy pequeños (3)
-    CHUNK_SIZE = 3 
-    chunks = [all_yahoo_tickers[i:i + CHUNK_SIZE] for i in range(0, len(all_yahoo_tickers), CHUNK_SIZE)]
-    
-    st.toast(f"🕵️ Recuperando datos ({len(chunks)} fases)...", icon="⏳")
-    
-    full_dfs_list = []
-    
-    for i, chunk in enumerate(chunks):
-        try:
-            # 3. PAUSA ALEATORIA (Jitter): Entre 2 y 5 segundos
-            # Esto evita que Yahoo detecte un patrón mecánico
-            if i > 0: 
-                sleep_time = random.uniform(2.0, 5.0)
-                time.sleep(sleep_time)
-            
-            df_chunk = yf.download(
-                tickers=" ".join(chunk), 
-                start=start_date, 
-                group_by='ticker', 
-                auto_adjust=True, 
-                prepost=False, 
-                threads=False, 
-                progress=False, 
-                timeout=20
-            )
-            
-            if df_chunk.empty: continue
-
-            chunk_series = []
-            
-            if len(chunk) == 1:
-                t_yahoo = chunk[0]
-                col_name = 'Close' if 'Close' in df_chunk.columns else 'Adj Close'
-                if col_name in df_chunk.columns:
-                    serie = df_chunk[col_name].copy()
-                    serie.name = map_yahoo_app[t_yahoo]
-                    chunk_series.append(serie)
-            else:
-                for t_yahoo in chunk:
-                    if t_yahoo in df_chunk.columns:
-                        df_sub = df_chunk[t_yahoo]
-                        col_name = 'Close' if 'Close' in df_sub.columns else 'Adj Close'
-                        if col_name in df_sub.columns:
-                            serie = df_sub[col_name].copy()
-                            serie.name = map_yahoo_app[t_yahoo]
-                            chunk_series.append(serie)
-            
-            if chunk_series:
-                full_dfs_list.extend(chunk_series)
-                
-        except Exception as e:
-            print(f"Error en chunk {i}: {e}")
-            continue
-
-    if not full_dfs_list:
-        return pd.DataFrame()
-
-    df_final = pd.concat(full_dfs_list, axis=1)
-    df_final = df_final.apply(pd.to_numeric, errors='coerce')
-    df_final.replace(0, np.nan, inplace=True)
-    
-    if not df_final.empty and df_final.index.tz is not None:
-        df_final.index = df_final.index.tz_localize(None)
-    
-    return df_final.ffill()
-
-# --- ORQUESTADOR PRINCIPAL ---
+# --- ORQUESTADOR PRINCIPAL (MODIFICADO) ---
 def get_data(lista_tickers=None):
     tickers_target = lista_tickers if lista_tickers else TICKERS
     if not tickers_target: return pd.DataFrame()
     today = pd.Timestamp.now().normalize()
     
-    # 1. LEER CACHÉ (v4)
-    usar_cache = False
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, 'r') as f:
-                cache_data = json.load(f)
-                cache_date = datetime.strptime(cache_data['date'], '%Y-%m-%d').date()
-                if cache_date == today.date():
-                    df_check = pd.read_json(io.StringIO(cache_data['data']))
-                    if not df_check.empty and len(df_check) > 10:
-                        df_history = df_check
-                        usar_cache = True
-                        st.toast("📂 Datos cargados de caché", icon="✅")
-        except: pass
+    # 1. LEER HISTORIAL DESDE GOOGLE SHEETS
+    df_history = database.get_historical_prices_df()
+    
+    if df_history.empty:
+        pass
+    else:
+        st.toast("📂 Historial cargado de Google Sheets.", icon="✅")
 
-    # 2. DESCARGA REAL
-    if not usar_cache:
-        df_history = get_history_yahoo(tickers_target)
-        
-        # Guardar caché solo si tenemos datos y NO está vacío
-        if not df_history.empty and len(df_history) > 10:
-            try:
-                if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
-                cache_to_save = {'date': today.strftime('%Y-%m-%d'), 'data': df_history.to_json()}
-                with open(CACHE_FILE, 'w') as f: json.dump(cache_to_save, f)
-            except: pass
-
-    # 3. MERGE IOL
+    # 2. MERGE IOL (TIEMPO REAL)
     dict_precios_hoy = get_current_prices_iol(tickers_target)
     
+    # Lógica de unión: IOL (hoy) + Sheets (histórico)
     if df_history.empty:
         if not dict_precios_hoy: return pd.DataFrame()
         df_final = pd.DataFrame([dict_precios_hoy], index=[today])
     else:
+        # Aseguramos que el histórico de Sheets no tenga el precio de hoy (si el bot lo incluyó)
         if df_history.index[-1].normalize() == today: 
             df_history = df_history.iloc[:-1]
             

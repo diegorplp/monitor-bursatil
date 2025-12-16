@@ -15,9 +15,9 @@ except ImportError:
     IVA = 1.21
     DERECHOS_ACCIONES = 0.0005
     DERECHOS_BONOS = 0.0001
-    VETA_MINIMO = 50 # Mantenemos por si el valor es usado en otro lado, pero no se usará en VETA
+    VETA_MINIMO = 50 
 
-# --- UTILIDADES (Omisión de código idéntico) ---
+# --- UTILIDADES (No Modificado) ---
 def _clean_number_str(val):
     if pd.isna(val) or val == "": return 0.0
     if isinstance(val, (int, float)): return float(val)
@@ -50,49 +50,35 @@ def _es_bono(ticker):
     return False
 
 def _calcular_comision_real(broker, monto_bruto, es_bono=False):
-    """
-    Cálculo AJUSTADO A FACTURA VETA/COCOS.
-    VETA: Base 0.15% (SIN MINIMO) + IVA + Derechos fijos.
-    COCOS/Gral: Base 0.45% + IVA + Derechos fijos.
-    """
     broker = str(broker).upper().strip()
     
-    # 1. Definir tasas de impuestos y derechos
     if es_bono:
         tasa_derechos = DERECHOS_BONOS
-        multiplicador_iva = 1.0 # Bonos no pagan IVA
+        multiplicador_iva = 1.0 
     else:
         tasa_derechos = DERECHOS_ACCIONES
         multiplicador_iva = IVA
         
-    # 2. Definir Tasa Base (Comisión)
     if broker == 'VETA':
-        tasa_base = COMISIONES.get('VETA', 0.0015) # Usamos 0.0015
-        # Comisiones separadas de VETA para reflejar factura
-        tasa_derechos_m = 0.0002 # D. Mercado (0.02%)
-        tasa_derechos_r = 0.0003 # D. Registro (0.03%)
+        tasa_base = COMISIONES.get('VETA', 0.0015) 
+        tasa_derechos_m = 0.0002 
+        tasa_derechos_r = 0.0003 
         
-        # LÓGICA VETA (Sin Mínimo)
         comision_base = monto_bruto * tasa_base
         derechos_m = monto_bruto * tasa_derechos_m
         derechos_r = monto_bruto * tasa_derechos_r
         
-        # Fórmula: (Comisión Base * 1.21) + Derechos + Registro (NO PAGA IVA SOBRE DERECHOS)
-        # Esto es lo que se deduce del boleto: 36.27 * 1.21 = 43.8 + 4.83 + 7.24
         costo_total = (comision_base * multiplicador_iva) + derechos_m + derechos_r 
         return costo_total
     
-    # 3. CASO GENERAL (COCOS, BULL, IOL)
     tasa_base = COMISIONES.get(broker, COMISIONES.get('DEFAULT', 0.0045))
     
     comision_base = monto_bruto * tasa_base
     derechos = monto_bruto * tasa_derechos
     
-    # Fórmula Cocos (Acciones): (Comisión + Derechos) * IVA. (Usamos la fórmula que da exacto para Cocos)
     if es_bono:
         costo_total = comision_base + derechos
     else:
-        # ACCIONES: La fórmula es (Comision Base + Derechos) * IVA (Si el broker no es VETA)
         costo_total = (comision_base + derechos) * multiplicador_iva
         
     return costo_total
@@ -127,11 +113,9 @@ def get_portafolio_df():
                 t_raw = str(t).strip().upper()
                 if not t_raw: return None
                 
-                # Si ya tiene sufijo o no es de la bolsa local (ej: SPY), lo dejamos
                 if '.' in t_raw:
                     return t_raw
                 
-                # Si es Argentino sin sufijo, lo agregamos (ej: GGAL -> GGAL.BA)
                 if len(t_raw) < 9 and not t_raw.endswith('.BA'):
                     return f"{t_raw}.BA"
                 
@@ -151,7 +135,47 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- LECTURA HISTORIAL (SIN CACHÉ) ---
+# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS ---
+@st.cache_data(ttl=3600, show_spinner=False) # Caché por 1 hora
+@retry_api_call
+def get_historical_prices_df():
+    try:
+        sh = _get_connection()
+        # Buscamos la hoja exacta "Historial_Yahoo"
+        ws = sh.worksheet("Historial_Yahoo") 
+        data = ws.get_all_records()
+        
+        if not data: return pd.DataFrame()
+        
+        df = pd.DataFrame(data)
+        
+        # 1. Limpieza de columnas
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # 2. Configurar la columna 'Date' como índice de tipo Datetime
+        if 'Date' in df.columns:
+            df = df.set_index('Date')
+            df.index = pd.to_datetime(df.index, errors='coerce')
+            df = df.dropna(subset=[df.index.name]) 
+            df = df.sort_index()
+        else:
+            return pd.DataFrame()
+
+        # 3. Convertir todas las columnas de tickers a numérico (precios)
+        for col in df.columns:
+            df[col] = df[col].apply(_clean_number_str)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        return df
+
+    except WorksheetNotFound: 
+        print("ERROR: No se encontró la hoja 'Historial_Yahoo'.")
+        return pd.DataFrame()
+    except Exception as e: 
+        print(f"Error al leer historial de Sheets: {e}")
+        return pd.DataFrame()
+
+# --- LECTURA HISTORIAL DE TRANSACCIONES (SIN CACHÉ) ---
 @retry_api_call
 def get_historial_df():
     try:
@@ -198,7 +222,7 @@ def get_historial_df():
         print(f"Error Historial: {e}")
         return pd.DataFrame()
 
-# --- ESCRITURA COMPRA ---
+# --- ESCRITURA COMPRA (No Modificado) ---
 @retry_api_call
 def add_transaction(datos):
     try:
@@ -206,7 +230,6 @@ def add_transaction(datos):
         ws = sh.get_worksheet(0)
         
         ticker_raw = str(datos['Ticker']).strip().upper()
-        # Mantenemos la normalización para el ticker que se guarda
         if '.' not in ticker_raw and len(ticker_raw) < 10:
             ticker_raw += ".BA"
             
@@ -225,7 +248,7 @@ def add_transaction(datos):
         
     except Exception as e: return False, f"Error: {e}"
 
-# --- ESCRITURA VENTA (BUSQUEDA CORREGIDA) ---
+# --- ESCRITURA VENTA (BUSQUEDA CORREGIDA) (No Modificado) ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
@@ -243,20 +266,14 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         fila_idx = -1
         row_data = None
         
-        # CRÍTICO: BUSQUEDA INDULGENTE
-        # Ticker del formulario viene normalizado (ej: NVDA.BA)
         ticker_form = ticker.upper().strip()
-        # Quitamos el sufijo al ticker del formulario para comparar contra el Excel crudo (ej: NVDA)
         ticker_search_raw = ticker_form.replace('.BA', '')
         
         for i, d in enumerate(data):
-            # Ticker de la fila del Excel (ej: NVDA)
             t_data_raw = str(d.get('Ticker', '')).upper().strip()
             f_data = str(d.get('Fecha_Compra', '')).strip()[:10]
             p_data = _clean_number_str(d.get('Precio_Compra', 0))
             
-            # Condición de Ticker: Comparamos la versión normalizada con la versión RAW del Excel.
-            # O sea: (NVDA.BA == NVDA) OR (NVDA == NVDA)
             ticker_match = (ticker_form == t_data_raw) or (ticker_search_raw == t_data_raw)
             
             if ticker_match and f_data == fecha_compra_str.strip()[:10]:
@@ -286,7 +303,6 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
 
         resultado_neto = ingreso_total_venta - costo_total_origen
 
-        # NOTA: Guardamos el Ticker en el Historial con la nomenclatura NORMALIZADA (NVDA.BA)
         nueva_fila = [ticker_form, fecha_compra_str, precio_compra, fecha_venta_str, precio_venta, cantidad_a_vender, costo_total_origen, ingreso_total_venta, resultado_neto, broker, 0, 0]
         ws_hist.append_row(nueva_fila)
 
@@ -311,8 +327,7 @@ def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, f
         return True, msg
     except Exception as e: return False, f"Error: {str(e)}"
 
-# [El resto del archivo sigue igual, incluyendo actualizar_alertas_lote, etc.]
-
+# --- FUNCIONES RESTANTES (No Modificado) ---
 @retry_api_call
 def actualizar_alertas_lote(ticker, fecha_compra_str, alerta_alta, alerta_baja):
     try:
