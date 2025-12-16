@@ -136,7 +136,7 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS (CON LOGS) ---
+# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS (CORREGIDA) ---
 @st.cache_data(ttl=3600, show_spinner=False) # Caché por 1 hora
 @retry_api_call
 def get_historical_prices_df():
@@ -155,36 +155,45 @@ def get_historical_prices_df():
         
         df = pd.DataFrame(data)
         
-        # 2. Limpieza de columnas y seteo de índice
+        # 2. Limpieza de columnas
         original_cols = list(df.columns)
         df.columns = [str(c).strip() for c in original_cols]
         print(f"[DEBUG] Columnas leídas y limpiadas: {list(df.columns)}")
 
+        # 3. Configurar la columna 'Date' como índice de tipo Datetime
         if 'Date' in df.columns:
             df = df.set_index('Date')
             df.index = pd.to_datetime(df.index, errors='coerce')
-            df = df.dropna(subset=[df.index.name]) 
+            # Filtro para eliminar filas donde la conversión de fecha falló (NaT)
+            df = df[df.index.notna()] 
             df = df.sort_index()
             print(f"[DEBUG] Índice 'Date' configurado. Filas restantes: {len(df)}")
         else:
             print("[ERROR] Columna 'Date' no encontrada en el historial.")
             return pd.DataFrame()
 
-        # 3. Convertir todas las columnas de tickers a numérico (precios)
+        # 4. Convertir todas las columnas de tickers a numérico (precios)
         for col in df.columns:
             # Reemplazamos celdas vacías/None con un valor temporal antes de limpiar
             df[col] = df[col].apply(lambda x: '' if pd.isna(x) else x)
             df[col] = df[col].apply(_clean_number_str)
-            # Volvemos a colocar NaN para que Pandas sepa que son nulos y no ceros
-            df[col] = df[col].replace(0.0, np.nan)
             df[col] = pd.to_numeric(df[col], errors='coerce')
-
+            # Reemplazamos 0.0 con np.nan para evitar que se interprete como precio
+            df[col] = df[col].replace(0.0, np.nan) 
+            
+        # 5. FILTRO CRÍTICO: Eliminar filas al final con muy pocos datos (causa del shape (1, Y))
+        # Eliminamos filas que tienen menos de 10 precios válidos.
+        initial_shape = df.shape
+        df = df.dropna(thresh=10, axis=0) # thresh=10: Requiere al menos 10 valores NO-NaN para mantener la fila
+        
+        print(f"[DEBUG] Filtro de filas (antes {initial_shape[0]}): {df.shape[0]} filas restantes.")
+        
+        if df.empty:
+            print("[ERROR] DataFrame sin suficientes datos después de la limpieza.")
+            return pd.DataFrame()
+            
         print(f"[DEBUG] DataFrame final shape: {df.shape}")
         
-        # Opcional: Mostrar una muestra de los tickers para verificar nomenclatura
-        sample_tickers = [c for c in df.columns if c.endswith('.BA') or c.endswith('.L')]
-        print(f"[DEBUG] Tickers de muestra: {sample_tickers[:5]}...")
-
         return df
 
     except WorksheetNotFound: 
