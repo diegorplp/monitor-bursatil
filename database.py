@@ -4,6 +4,7 @@ import time
 import streamlit as st
 import re
 from gspread.exceptions import APIError, WorksheetNotFound
+import numpy as np # Importado para manejo de nan
 
 # --- CONFIGURACIÓN ---
 try:
@@ -135,47 +136,68 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS ---
+# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS (CON LOGS) ---
 @st.cache_data(ttl=3600, show_spinner=False) # Caché por 1 hora
 @retry_api_call
 def get_historical_prices_df():
+    print("--- INICIO DIAGNÓSTICO: get_historical_prices_df ---")
     try:
         sh = _get_connection()
-        # Buscamos la hoja exacta "Historial_Yahoo"
+        
+        # 1. Buscamos la hoja exacta
         ws = sh.worksheet("Historial_Yahoo") 
+        print(f"[DEBUG] Hoja encontrada: '{ws.title}'")
         data = ws.get_all_records()
         
-        if not data: return pd.DataFrame()
+        if not data: 
+            print("[DEBUG] Data vacía de Google Sheets.")
+            return pd.DataFrame()
         
         df = pd.DataFrame(data)
         
-        # 1. Limpieza de columnas
-        df.columns = [str(c).strip() for c in df.columns]
+        # 2. Limpieza de columnas y seteo de índice
+        original_cols = list(df.columns)
+        df.columns = [str(c).strip() for c in original_cols]
+        print(f"[DEBUG] Columnas leídas y limpiadas: {list(df.columns)}")
 
-        # 2. Configurar la columna 'Date' como índice de tipo Datetime
         if 'Date' in df.columns:
             df = df.set_index('Date')
             df.index = pd.to_datetime(df.index, errors='coerce')
             df = df.dropna(subset=[df.index.name]) 
             df = df.sort_index()
+            print(f"[DEBUG] Índice 'Date' configurado. Filas restantes: {len(df)}")
         else:
+            print("[ERROR] Columna 'Date' no encontrada en el historial.")
             return pd.DataFrame()
 
         # 3. Convertir todas las columnas de tickers a numérico (precios)
         for col in df.columns:
+            # Reemplazamos celdas vacías/None con un valor temporal antes de limpiar
+            df[col] = df[col].apply(lambda x: '' if pd.isna(x) else x)
             df[col] = df[col].apply(_clean_number_str)
+            # Volvemos a colocar NaN para que Pandas sepa que son nulos y no ceros
+            df[col] = df[col].replace(0.0, np.nan)
             df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        print(f"[DEBUG] DataFrame final shape: {df.shape}")
+        
+        # Opcional: Mostrar una muestra de los tickers para verificar nomenclatura
+        sample_tickers = [c for c in df.columns if c.endswith('.BA') or c.endswith('.L')]
+        print(f"[DEBUG] Tickers de muestra: {sample_tickers[:5]}...")
 
         return df
 
     except WorksheetNotFound: 
-        print("ERROR: No se encontró la hoja 'Historial_Yahoo'.")
+        print("ERROR: No se encontró la hoja 'Historial_Yahoo' (¡Revisa el nombre!).")
         return pd.DataFrame()
     except Exception as e: 
-        print(f"Error al leer historial de Sheets: {e}")
+        print(f"ERROR FATAL en get_historical_prices_df: {e}")
         return pd.DataFrame()
+    finally:
+        print("--- FIN DIAGNÓSTICO: get_historical_prices_df ---")
 
-# --- LECTURA HISTORIAL DE TRANSACCIONES (SIN CACHÉ) ---
+
+# --- LECTURA HISTORIAL DE TRANSACCIONES (SIN CACHÉ) (No Modificado) ---
 @retry_api_call
 def get_historial_df():
     try:
