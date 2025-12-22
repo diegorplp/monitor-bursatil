@@ -3,7 +3,7 @@ import pandas_ta as ta
 import numpy as np
 import config
 
-# --- [DETECCIÓN DE BONOS Y COMISIONES OMITIDAS POR SER IDÉNTICAS] ---
+# --- [DETECCIÓN DE BONOS Y COMISIONES] (No Modificado) ---
 def _es_bono(ticker):
     if not ticker: return False
     t = str(ticker).strip().upper()
@@ -45,14 +45,10 @@ def calcular_comision_real(monto_bruto, broker, es_bono=False):
         
     return costo_total
 
-# --- INDICADORES (CON LOGS DE DEBUG) ---
+# --- INDICADORES (No Modificado el general) ---
 def calcular_indicadores(df_historico_raw):
-    if df_historico_raw.empty: 
-        print("[DEBUG] calcular_indicadores recibió DataFrame vacío.")
-        return pd.DataFrame()
+    if df_historico_raw.empty: return pd.DataFrame()
     
-    print(f"[DEBUG] calcular_indicadores: Recibido DF con {len(df_historico_raw)} filas. Columnas: {list(df_historico_raw.columns)}")
-
     lista_resultados = []
     
     for ticker in df_historico_raw.columns:
@@ -60,18 +56,8 @@ def calcular_indicadores(df_historico_raw):
             serie_precios = df_historico_raw[ticker].dropna()
             cant_datos = len(serie_precios)
             
-            # LOG PARA DETECTAR POR QUÉ FALLA UN TICKER ESPECÍFICO
             if cant_datos < 15:
-                print(f"[DEBUG] {ticker}: Datos insuficientes ({cant_datos} filas). Se requiere > 14.")
-                precio_actual = serie_precios.iloc[-1] if not serie_precios.empty else None
-                lista_resultados.append({
-                    'Ticker': ticker,
-                    'Precio': precio_actual,
-                    'RSI': None,
-                    'Caida_30d': None,
-                    'Caida_5d': None,
-                    'Var_Ayer': None
-                })
+                # Datos insuficientes, saltamos
                 continue
 
             precio_actual = serie_precios.iloc[-1]
@@ -84,8 +70,6 @@ def calcular_indicadores(df_historico_raw):
             rsi = ta.rsi(serie_precios, length=14)
             if rsi is not None and not rsi.empty:
                 rsi_actual = rsi.iloc[-1]
-            else:
-                print(f"[DEBUG] {ticker}: TA-Lib falló al calcular RSI.")
             
             # Caídas
             max_30d = serie_precios.tail(30).max()
@@ -107,9 +91,7 @@ def calcular_indicadores(df_historico_raw):
                 'Var_Ayer': var_ayer
             })
             
-        except Exception as e:
-            print(f"[DEBUG] ERROR FATAL en {ticker}: {e}")
-            continue
+        except Exception: continue
 
     df_resumen = pd.DataFrame(lista_resultados)
     if df_resumen.empty: return pd.DataFrame()
@@ -130,7 +112,27 @@ def calcular_indicadores(df_historico_raw):
     
     return df_resumen
 
-# ... [Resto de funciones omitidas] ...
+# --- NUEVA FUNCIÓN: SIMULADOR DE RSI ---
+def calcular_rsi_simulado(df_historico, ticker, precio_nuevo):
+    if ticker not in df_historico.columns: return None
+    
+    # Tomamos la serie y agregamos el precio nuevo al final
+    serie = df_historico[ticker].dropna().copy()
+    
+    # Agregar el precio simulado como si fuera el cierre de hoy (o mañana)
+    # Pandas Series append está deprecado en versiones nuevas, usamos concat
+    nueva_fila = pd.Series([precio_nuevo], index=[serie.index[-1] + pd.Timedelta(days=1)])
+    serie_simulada = pd.concat([serie, nueva_fila])
+    
+    try:
+        rsi_series = ta.rsi(serie_simulada, length=14)
+        if rsi_series is not None and not rsi_series.empty:
+            return rsi_series.iloc[-1]
+    except: pass
+    
+    return None
+
+# ... [Resto de funciones omitidas sin cambios: analizar_portafolio, calcular_mep] ...
 def analizar_portafolio(df_portafolio, series_precios_actuales):
     if df_portafolio.empty: return pd.DataFrame()
 
@@ -203,7 +205,5 @@ def calcular_mep(df_raw):
                 if len(mep_series) >= 2:
                     variacion = (ultimo_mep / mep_series.iloc[-2]) - 1
                 return ultimo_mep, variacion
-            except Exception as e:
-                 print(f"Error calculando MEP para {peso_ticker}: {e}")
-                 continue
+            except Exception: continue
     return None, None

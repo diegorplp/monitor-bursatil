@@ -4,7 +4,7 @@ import time
 import streamlit as st
 import re
 from gspread.exceptions import APIError, WorksheetNotFound
-import numpy as np # Importado para manejo de nan
+import numpy as np 
 
 # --- CONFIGURACIÓN ---
 try:
@@ -97,7 +97,7 @@ def _get_connection():
     else: gc = gspread.service_account(filename=CREDENTIALS_FILE)
     return gc.open(SHEET_NAME)
 
-# --- LECTURA PORTAFOLIO (Con Caché - NORMALIZACIÓN CORREGIDA) ---
+# --- LECTURA PORTAFOLIO (No Modificado) ---
 @st.cache_data(ttl=60, show_spinner=False)
 @retry_api_call
 def get_portafolio_df():
@@ -108,18 +108,12 @@ def get_portafolio_df():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         
-        # --- CRÍTICO: NORMALIZACIÓN DE TICKERS ---
         if 'Ticker' in df.columns:
             def normalize_ticker(t):
                 t_raw = str(t).strip().upper()
                 if not t_raw: return None
-                
-                if '.' in t_raw:
-                    return t_raw
-                
-                if len(t_raw) < 9 and not t_raw.endswith('.BA'):
-                    return f"{t_raw}.BA"
-                
+                if '.' in t_raw: return t_raw
+                if len(t_raw) < 9 and not t_raw.endswith('.BA'): return f"{t_raw}.BA"
                 return t_raw
 
             df['Ticker'] = df['Ticker'].apply(normalize_ticker)
@@ -136,77 +130,48 @@ def get_portafolio_df():
         return df
     except Exception: return pd.DataFrame()
 
-# --- NUEVA FUNCIÓN: LECTURA DE PRECIOS HISTÓRICOS DESDE GOOGLE SHEETS (CORREGIDA) ---
-@st.cache_data(ttl=3600, show_spinner=False) # Caché por 1 hora
+# --- LECTURA DE PRECIOS HISTÓRICOS (AHORA PARAMETRIZADA) ---
+@st.cache_data(ttl=3600, show_spinner=False) 
 @retry_api_call
-def get_historical_prices_df():
-    print("--- INICIO DIAGNÓSTICO: get_historical_prices_df ---")
+def get_historical_prices_df(nombre_hoja="Historial_Yahoo"):
     try:
         sh = _get_connection()
-        
-        # 1. Buscamos la hoja exacta
-        ws = sh.worksheet("Historial_Yahoo") 
-        print(f"[DEBUG] Hoja encontrada: '{ws.title}'")
+        ws = sh.worksheet(nombre_hoja) 
         data = ws.get_all_records()
         
-        if not data: 
-            print("[DEBUG] Data vacía de Google Sheets.")
-            return pd.DataFrame()
+        if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        
-        # 2. Limpieza de columnas
         original_cols = list(df.columns)
         df.columns = [str(c).strip() for c in original_cols]
-        print(f"[DEBUG] Columnas leídas y limpiadas: {list(df.columns)}")
 
-        # 3. Configurar la columna 'Date' como índice de tipo Datetime
         if 'Date' in df.columns:
             df = df.set_index('Date')
             df.index = pd.to_datetime(df.index, errors='coerce')
-            # Filtro para eliminar filas donde la conversión de fecha falló (NaT)
             df = df[df.index.notna()] 
             df = df.sort_index()
-            print(f"[DEBUG] Índice 'Date' configurado. Filas restantes: {len(df)}")
         else:
-            print("[ERROR] Columna 'Date' no encontrada en el historial.")
             return pd.DataFrame()
 
-        # 4. Convertir todas las columnas de tickers a numérico (precios)
         for col in df.columns:
-            # Reemplazamos celdas vacías/None con un valor temporal antes de limpiar
             df[col] = df[col].apply(lambda x: '' if pd.isna(x) else x)
             df[col] = df[col].apply(_clean_number_str)
             df[col] = pd.to_numeric(df[col], errors='coerce')
-            # Reemplazamos 0.0 con np.nan para evitar que se interprete como precio
             df[col] = df[col].replace(0.0, np.nan) 
             
-        # 5. FILTRO CRÍTICO: Eliminar filas al final con muy pocos datos (causa del shape (1, Y))
-        # Eliminamos filas que tienen menos de 10 precios válidos.
-        initial_shape = df.shape
-        df = df.dropna(thresh=10, axis=0) # thresh=10: Requiere al menos 10 valores NO-NaN para mantener la fila
-        
-        print(f"[DEBUG] Filtro de filas (antes {initial_shape[0]}): {df.shape[0]} filas restantes.")
-        
-        if df.empty:
-            print("[ERROR] DataFrame sin suficientes datos después de la limpieza.")
-            return pd.DataFrame()
-            
-        print(f"[DEBUG] DataFrame final shape: {df.shape}")
+        df = df.dropna(thresh=5, axis=0) # Umbral un poco más bajo por si acaso
         
         return df
 
     except WorksheetNotFound: 
-        print("ERROR: No se encontró la hoja 'Historial_Yahoo' (¡Revisa el nombre!).")
+        print(f"ERROR: No se encontró la hoja '{nombre_hoja}'.")
         return pd.DataFrame()
     except Exception as e: 
         print(f"ERROR FATAL en get_historical_prices_df: {e}")
         return pd.DataFrame()
-    finally:
-        print("--- FIN DIAGNÓSTICO: get_historical_prices_df ---")
 
 
-# --- LECTURA HISTORIAL DE TRANSACCIONES (SIN CACHÉ) (No Modificado) ---
+# --- LECTURA HISTORIAL DE TRANSACCIONES (No Modificado) ---
 @retry_api_call
 def get_historial_df():
     try:
@@ -279,7 +244,7 @@ def add_transaction(datos):
         
     except Exception as e: return False, f"Error: {e}"
 
-# --- ESCRITURA VENTA (BUSQUEDA CORREGIDA) (No Modificado) ---
+# --- ESCRITURA VENTA (No Modificado) ---
 @retry_api_call
 def registrar_venta(ticker, fecha_compra_str, cantidad_a_vender, precio_venta, fecha_venta_str, precio_compra_id=None):
     try:
