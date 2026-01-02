@@ -207,3 +207,78 @@ def calcular_mep(df_raw):
                 return ultimo_mep, variacion
             except Exception: continue
     return None, None
+
+# --- NUEVA FUNCIÓN: SCREENER AVANZADO CEDEARS (RSI MULTI-LENGTH) ---
+def calcular_screen_cedears(df_historico_raw):
+    """
+    Calcula métricas estándar + Consenso de RSI de corto plazo (1 a 8 periodos).
+    """
+    if df_historico_raw.empty: return pd.DataFrame()
+    
+    lista_resultados = []
+    
+    # Definimos los periodos para el consenso
+    lengths_consenso = range(2, 9) # Usamos 2 a 8 (RSI 1 es muy ruidoso/binario, pero si quieres 1 a 8 cambia a range(1, 9))
+    # NOTA: Larry Connors usa RSI(2). RSI(1) es 0 o 100 casi siempre. 
+    # Si prefieres estrictamente 1 a 8, usa: range(1, 9)
+    # Voy a usar 2 a 8 para evitar ruido extremo, pero es configurable.
+    
+    rangos_analisis = range(1, 9) # Ok, hagamos 1 a 8 como pediste estrictamente.
+
+    for ticker in df_historico_raw.columns:
+        try:
+            serie_precios = df_historico_raw[ticker].dropna()
+            cant_datos = len(serie_precios)
+            
+            # Necesitamos al menos unos 20 datos para que el RSI(14) sea estable, 
+            # y el RSI(8) necesita mínimo 9.
+            if cant_datos < 20: continue
+
+            precio_actual = serie_precios.iloc[-1]
+            
+            # 1. Métricas Estándar (Contexto)
+            rsi_14 = 0
+            try:
+                r14 = ta.rsi(serie_precios, length=14)
+                if r14 is not None: rsi_14 = r14.iloc[-1]
+            except: pass
+
+            var_max_30d = 0
+            max_30 = serie_precios.tail(30).max()
+            if max_30 > 0: var_max_30d = (precio_actual / max_30) - 1
+            
+            var_max_5d = 0
+            max_5 = serie_precios.tail(5).max()
+            if max_5 > 0: var_max_5d = (precio_actual / max_5) - 1
+
+            # 2. CÁLCULO DE CONSENSO MULTI-LENGTH (1 a 8)
+            # Contamos cuántos de estos RSIs están por debajo de 30
+            conteo_sobreventa = 0
+            total_mediciones = len(rangos_analisis) # 8
+            
+            for length in rangos_analisis:
+                try:
+                    # Cálculo rápido de RSI para N periodos
+                    val_rsi = ta.rsi(serie_precios, length=length).iloc[-1]
+                    if val_rsi < 30:
+                        conteo_sobreventa += 1
+                except: pass
+            
+            pct_consenso = conteo_sobreventa / total_mediciones # Ej: 4/8 = 0.50
+
+            lista_resultados.append({
+                'Ticker': ticker,
+                'Precio': precio_actual,
+                'RSI_14': rsi_14, # Le pongo RSI_14 para diferenciar
+                'Caida_30d': var_max_30d,
+                'Caida_5d': var_max_5d,
+                'Consenso_RSI': pct_consenso # Valor entre 0.0 y 1.0
+            })
+            
+        except Exception: continue
+
+    df_resumen = pd.DataFrame(lista_resultados)
+    if df_resumen.empty: return pd.DataFrame()
+
+    df_resumen.set_index('Ticker', inplace=True)
+    return df_resumen
