@@ -31,22 +31,40 @@ else:
         # Ordenar: Primero los que tengan MAYOR CONSENSO de sobreventa
         df_screen.sort_values(by=['Consenso_RSI', 'RSI_14'], ascending=[False, True], inplace=True)
         
-        # Formato columnas
+# Formato columnas
         column_config = {
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
             "RSI_14": st.column_config.NumberColumn(format="%.1f", label="RSI (14)"),
             
-            # NUEVA COLUMNA VISUAL
             "Consenso_RSI": st.column_config.ProgressColumn(
-                label="Consenso RSI < 30 (1-8d)",
-                help="Muestra qué porcentaje de los RSI de corto plazo (1 a 8 días) están en zona de compra.",
+                label="Consenso RSI < 30",
+                help="% RSI corto plazo en sobreventa",
                 format="%.0f%%",
                 min_value=0,
                 max_value=1,
             ),
             
+            # NUEVAS COLUMNAS
+            "SMA_70": st.column_config.NumberColumn(format="$%.2f", label="SMA (70)"),
+            "Dias_Bajo_SMA": st.column_config.NumberColumn(
+                label="Días < SMA70",
+                help="Días hábiles consecutivos que el precio ha cerrado por debajo de la SMA 70.",
+                format="%d 📉" # Agrega un iconito visual
+            ),
+
             "Caida_30d": st.column_config.NumberColumn(format="%.2%", label="Caída 30d"),
         }
+        
+        # Agregamos los campos a la lista de visualización
+        cols_show = ['Precio', 'Consenso_RSI', 'Dias_Bajo_SMA', 'SMA_70', 'RSI_14', 'Caida_30d']
+
+        # Mostrar Tabla
+        st.dataframe(
+            df_screen[cols_show].style.map(style_rsi_std, subset=['RSI_14']),
+            use_container_width=True,
+            column_config=column_config,
+            height=700
+        )
         
         cols_show = ['Precio', 'Consenso_RSI', 'RSI_14', 'Caida_30d', 'Caida_5d']
 

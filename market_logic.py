@@ -208,8 +208,95 @@ def calcular_mep(df_raw):
             except Exception: continue
     return None, None
 
-# --- NUEVA FUNCIÓN: SCREENER AVANZADO CEDEARS (RSI MULTI-LENGTH) ---
+# --- EN MARKET_LOGIC.PY ---
+
 def calcular_screen_cedears(df_historico_raw):
+    """
+    Calcula métricas estándar + Consenso RSI + SMA 70 + Racha bajista vs SMA 70.
+    """
+    if df_historico_raw.empty: return pd.DataFrame()
+    
+    lista_resultados = []
+    rangos_analisis = range(2, 9) 
+
+    for ticker in df_historico_raw.columns:
+        try:
+            serie_precios = df_historico_raw[ticker].dropna()
+            cant_datos = len(serie_precios)
+            
+            # Necesitamos historial suficiente para SMA 70
+            if cant_datos < 75: continue # Aumenté un poco el filtro para asegurar SMA 70
+
+            precio_actual = serie_precios.iloc[-1]
+            
+            # 1. Indicadores Base
+            rsi_14 = 0
+            try:
+                r14 = ta.rsi(serie_precios, length=14)
+                if r14 is not None: rsi_14 = r14.iloc[-1]
+            except: pass
+
+            var_max_30d = 0
+            max_30 = serie_precios.tail(30).max()
+            if max_30 > 0: var_max_30d = (precio_actual / max_30) - 1
+            
+            var_max_5d = 0
+            max_5 = serie_precios.tail(5).max()
+            if max_5 > 0: var_max_5d = (precio_actual / max_5) - 1
+
+            # 2. Consenso RSI
+            conteo_sobreventa = 0
+            total_mediciones = len(rangos_analisis)
+            for length in rangos_analisis:
+                try:
+                    val_rsi = ta.rsi(serie_precios, length=length).iloc[-1]
+                    if val_rsi < 30: conteo_sobreventa += 1
+                except: pass
+            pct_consenso = conteo_sobreventa / total_mediciones
+
+            # 3. SMA 70 y Días Consecutivos Debajo
+            sma_70_val = 0
+            dias_bajo_sma = 0
+            try:
+                sma_series = ta.sma(serie_precios, length=70)
+                if sma_series is not None and not sma_series.empty:
+                    sma_70_val = sma_series.iloc[-1]
+                    
+                    # Lógica de Racha: Recorrer hacia atrás contando días CLOSE < SMA
+                    # Alineamos series (quitando nulos iniciales de la SMA)
+                    df_calc = pd.DataFrame({'close': serie_precios, 'sma': sma_series}).dropna()
+                    
+                    if not df_calc.empty:
+                        # Convertimos a booleanos: True si Precio < SMA
+                        condicion_bajo_sma = df_calc['close'] < df_calc['sma']
+                        
+                        # Recorremos de atrás hacia adelante (desde hoy hacia el pasado)
+                        # iloc[-1] es hoy, iloc[-2] ayer...
+                        for i in range(len(condicion_bajo_sma) - 1, -1, -1):
+                            if condicion_bajo_sma.iloc[i]:
+                                dias_bajo_sma += 1
+                            else:
+                                break # Cortamos la racha apenas un día el precio estuvo arriba
+            except: pass
+
+            lista_resultados.append({
+                'Ticker': ticker,
+                'Precio': precio_actual,
+                'RSI_14': rsi_14,
+                'Caida_30d': var_max_30d,
+                'Caida_5d': var_max_5d,
+                'Consenso_RSI': pct_consenso,
+                'SMA_70': sma_70_val,
+                'Dias_Bajo_SMA': dias_bajo_sma
+            })
+            
+        except Exception: continue
+
+    df_resumen = pd.DataFrame(lista_resultados)
+    if df_resumen.empty: return pd.DataFrame()
+
+    df_resumen.set_index('Ticker', inplace=True)
+    return df_resumen
     """
     Calcula métricas estándar + Consenso de RSI de corto plazo (1 a 8 periodos).
     """
